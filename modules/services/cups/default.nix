@@ -190,26 +190,70 @@ in
 
     environment.systemPackages = [ cfg.package.out ];
 
-    finit.services.cups = {
+    providers.services.units.cups = {
       description = "CUPS printing daemon";
-      conditions = "service/syslogd/ready";
-      command = "${cfg.package.out}/sbin/cupsd -f -c /etc/cups/cupsd.conf -s ${format.generate "cups-files.conf" cfg.settings}";
-      log = true;
+
+      # was `service/syslogd/ready`: syslogd is in the head tier, so reaching
+      # the multi-user tier is already after it.
+      requires = [ "basic" ];
+
+      type.service.command = "${cfg.package.out}/sbin/cupsd -f -c /etc/cups/cupsd.conf -s ${format.generate "cups-files.conf" cfg.settings}";
     };
 
-    finit.tmpfiles.rules = [
-      "d /etc/cups 0755 root ${cfg.group}"
-      "d /run/cups 0755 root ${cfg.group}"
-      "d /var/cache/cups 0700 root ${cfg.group}"
-      "d /var/lib/cups 0755 root ${cfg.group}"
-      "d /var/spool/cups 0700 root ${cfg.group}"
-      "d /var/spool/cups/tmp 0700 root ${cfg.group}"
-
-      # place default cupsd.conf only if one doesn't already exist
-      "C /etc/cups/cupsd.conf - - - - ${defaultCupsdConf}"
-      "f /etc/cups/snmp.conf - - - - Address @LOCAL"
-      "f /etc/cups/client.conf"
-    ];
+    providers.services.tmpfiles.rules =
+      map
+        (dir: {
+          path = dir.path;
+          type.directory = {
+            inherit (dir) mode;
+            user = "root";
+            inherit (cfg) group;
+          };
+        })
+        [
+          {
+            path = "/etc/cups";
+            mode = "0755";
+          }
+          {
+            path = "/run/cups";
+            mode = "0755";
+          }
+          {
+            path = "/var/cache/cups";
+            mode = "0700";
+          }
+          {
+            path = "/var/lib/cups";
+            mode = "0755";
+          }
+          {
+            path = "/var/spool/cups";
+            mode = "0700";
+          }
+          {
+            path = "/var/spool/cups/tmp";
+            mode = "0700";
+          }
+        ]
+      ++ [
+        # The old `C` rule copied the default config in only if none was there.
+        # The contract has no copy kind, so name the contents instead: `file`
+        # creates the path if it is absent and leaves an existing one alone,
+        # which is the behaviour that rule was after.
+        {
+          path = "/etc/cups/cupsd.conf";
+          type.file.argument = builtins.readFile defaultCupsdConf;
+        }
+        {
+          path = "/etc/cups/snmp.conf";
+          type.file.argument = "Address @LOCAL";
+        }
+        {
+          path = "/etc/cups/client.conf";
+          type.file.argument = null;
+        }
+      ];
 
     users.users = lib.optionalAttrs (cfg.user == "cups") {
       cups = {

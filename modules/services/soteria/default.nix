@@ -35,13 +35,14 @@ in
       }
     ];
 
-    finit.services.polkit-soteria = {
+    providers.services.units.polkit-soteria = {
       description = "Soteria, Polkit authentication agent for any desktop environment";
-      runlevels = "34";
-      conditions = "service/polkit/ready";
-      command = lib.getExe cfg.package;
-      log = true;
-      nohup = true;
+
+      # polkit directly, rather than a runlevel: the agent is useless without
+      # it, and the trunk says nothing about polkit being up.
+      requires = [ "polkit" ];
+
+      type.service.command = lib.getExe cfg.package;
     };
   };
 }

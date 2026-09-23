@@ -180,20 +180,39 @@ in
           kernel.sysctl = routingSysctls;
         };
 
-        finit.tmpfiles.rules = [
-          "d /run/tailscale 0755 root root"
-          "d ${cfg.stateDir} 0700 root root"
+        providers.services.tmpfiles.rules = [
+          {
+            path = "/run/tailscale";
+            type.directory = {
+              mode = "0755";
+              user = "root";
+              group = "root";
+            };
+          }
+          {
+            path = cfg.stateDir;
+            type.directory = {
+              mode = "0700";
+              user = "root";
+              group = "root";
+            };
+          }
         ];
 
-        finit.services.tailscaled = {
+        providers.services.units.tailscaled = {
           description = "tailscaled";
-          notify = "systemd";
-          conditions = [
-            "service/syslogd/ready"
-            "net/route/default"
-          ];
-          command = "${tailscaledScript}";
-          post = "";
+
+          # was `service/syslogd/ready` + `net/route/default`. syslogd is in the
+          # head tier, so only the route is left to name, and the trunk has a
+          # unit for it.
+          requires = [ "network-online" ];
+
+          type.service = {
+            command = "${tailscaledScript}";
+            # `notify = "systemd"` upstream: tailscaled speaks sd_notify.
+            readiness = "notify";
+          };
+
           path = [
             (dirOf config.security.wrapperDir)
             pkgs.procps
@@ -201,20 +220,16 @@ in
             pkgs.kmod
           ]
           ++ lib.optional config.programs.resolvconf.enable config.programs.resolvconf.package;
-          respawn = true;
-          log = true;
         };
 
-        finit.tasks.tailscale-up = lib.mkIf (cfg.authKeyFile != null || cfg.extraUpFlags != [ ]) {
-          description = "tailscale up";
+        providers.services.units.tailscale-up =
+          lib.mkIf (cfg.authKeyFile != null || cfg.extraUpFlags != [ ])
+            {
+              description = "tailscale up";
+              requires = [ "tailscaled" ];
 
-          conditions = [
-            "service/tailscaled/ready"
-          ];
-
-          command = "${tailscaleUpScript}";
-          log = true;
-        };
+              type.oneshot.command = "${tailscaleUpScript}";
+            };
       }
       (lib.optionalAttrs (options ? services.dhcpcd) {
         services.dhcpcd.settings.denyinterfaces = lib.optionals tun [ cfg.interfaceName ];

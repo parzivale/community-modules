@@ -65,10 +65,14 @@ in
     ++ lib.optionals (cfg.motherboard == "amd") [ "i2c-piix4" ]
     ++ lib.optionals (cfg.motherboard == "intel") [ "i2c-i801" ];
 
-    finit.services.openrgb = {
+    providers.services.units.openrgb = {
       description = "OpenRGB SDK Server";
-      conditions = "service/syslogd/ready";
-      command = lib.escapeShellArgs (
+
+      # was `service/syslogd/ready`: syslogd is in the head tier, so reaching
+      # the multi-user tier is already after it.
+      requires = [ "basic" ];
+
+      type.service.command = lib.escapeShellArgs (
         [
           (lib.getExe cfg.package)
           "--server"

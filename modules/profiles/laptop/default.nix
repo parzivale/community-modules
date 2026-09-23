@@ -9,7 +9,11 @@ let
   cfg = config.profiles.laptop;
 in
 {
-  imports = with modules; [
+  imports = [
+    # a community module, so not in finix's `modules`
+    ../../services/cgroups
+  ]
+  ++ (with modules; [
     atd
     bash
     bluetooth
@@ -37,7 +41,7 @@ in
     upower
     wireplumber
     zzz
-  ];
+  ]);
 
   options.profiles.laptop = {
     enable = lib.mkOption {
@@ -86,10 +90,11 @@ in
       "loglevel=1"
     ];
 
-    # graphical runlevel
+    # graphical runlevel. finit-specific on purpose: runlevels are a finit
+    # concept, and `providers.services` deliberately has none.
     finit.runlevel = 3;
 
-    finit.cgroups.system.settings = {
+    cgroups.system.settings = {
       "cpu.weight" = 100;
     };
 

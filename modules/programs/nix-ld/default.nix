@@ -62,9 +62,21 @@ in
       NIX_LD_LIBRARY_PATH.default = "/run/current-system/sw/share/nix-ld/lib";
     };
 
-    finit.tmpfiles.rules = [
-      "d /${pkgs.stdenv.hostPlatform.libDir} 0755 root root - -"
-      "L+ /${pkgs.stdenv.hostPlatform.libDir}/${ldsoBasename} - - - - ${cfg.package}/libexec/nix-ld"
+    providers.services.tmpfiles.rules = [
+      {
+        path = "/${pkgs.stdenv.hostPlatform.libDir}";
+        type.directory = {
+          mode = "0755";
+          user = "root";
+          group = "root";
+        };
+      }
+      {
+        # `L+` replaced whatever was at the path; `symlink` points the path at
+        # the argument, which is the same intent for a link this module owns.
+        path = "/${pkgs.stdenv.hostPlatform.libDir}/${ldsoBasename}";
+        type.symlink.argument = "${cfg.package}/libexec/nix-ld";
+      }
     ];
   };
 }

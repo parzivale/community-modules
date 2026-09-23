@@ -104,13 +104,16 @@ in
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ cfg.package ];
 
-    finit.services.yarr = {
+    providers.services.units.yarr = {
       inherit (cfg) user group;
 
       description = "yarr daemon service";
-      conditions = "service/syslogd/ready";
-      log = true;
-      command = lib.strings.concatStringsSep " " (
+
+      # was `service/syslogd/ready`: syslogd is in the head tier, so reaching
+      # the multi-user tier is already after it.
+      requires = [ "basic" ];
+
+      type.service.command = lib.strings.concatStringsSep " " (
         [
           "${lib.getExe cfg.package}"
           "-db"
@@ -124,8 +127,14 @@ in
       );
     };
 
-    finit.tmpfiles.rules = lib.optionals (cfg.stateDir == "/var/lib/yarr") [
-      "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group}"
+    providers.services.tmpfiles.rules = lib.optionals (cfg.stateDir == "/var/lib/yarr") [
+      {
+        path = cfg.stateDir;
+        type.directory = {
+          mode = "0700";
+          inherit (cfg) user group;
+        };
+      }
     ];
 
     users.users = lib.mkIf (cfg.user == "yarr") {

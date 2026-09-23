@@ -91,29 +91,33 @@ in
 
     environment.pathsToLink = [ "/etc/profile.d" ];
 
-    finit.tasks = lib.mapAttrs' (
+    providers.services.units = lib.mapAttrs' (
       user: hmCfg:
       let
         userCfg = config.users.users.${user};
       in
       lib.nameValuePair "hm-activate-${user}" {
         description = "home-manager activation for ${user}";
-        conditions = [
-          "service/syslogd/ready"
-          "service/nix-daemon/ready"
-        ];
-        command = "${hmCfg.home.activationPackage}/activate";
-        user = user;
+
+        # was `service/syslogd/ready` + `service/nix-daemon/ready`. syslogd is in
+        # the head tier; the daemon is named directly because activation builds
+        # through it.
+        requires = [ "nix-daemon" ];
+
+        type.oneshot.command = "${hmCfg.home.activationPackage}/activate";
+
+        inherit user;
+
         path = [
           pkgs.nix
           pkgs.coreutils
           pkgs.bash
         ];
+
         environment = {
           HOME = userCfg.home;
           USER = user;
         };
-        log = true;
       }
     ) cfg.users;
   };

@@ -139,12 +139,16 @@ in
   ###### implementation
 
   config = mkIf cfg.enable {
-    finit.services.xinetd = {
+    providers.services.units.xinetd = {
       description = "xinetd server";
-      conditions = [ "services/syslogd/ready" ];
-      runlevels = "34";
+
+      # was `services/syslogd/ready` plus runlevels 34: syslogd is in the head
+      # tier, so the multi-user tier covers both.
+      requires = [ "basic" ];
+
       path = [ pkgs.xinetd ];
-      command = "${pkgs.xinetd} -syslog daemon -dontfork -stayalive -f ${configFile}";
+
+      type.service.command = "${pkgs.xinetd} -syslog daemon -dontfork -stayalive -f ${configFile}";
     };
   };
 }
