@@ -21,14 +21,13 @@ let
 
   users = config.users.users;
 
-  # NixOS derives this from `services.openssh.hostKeys`, which finix does not
-  # have: its openssh module takes a freeform `settings`, so there is no list of
-  # host keys to read. Fall back to the paths sshd generates by default, and let
-  # the script warn if they are absent rather than guessing further.
-  defaultIdentityPaths = lib.optionals (config.services.openssh.enable or false) [
-    "/etc/ssh/ssh_host_ed25519_key"
-    "/etc/ssh/ssh_host_rsa_key"
-  ];
+  # The host keys sshd is actually configured with - which is what NixOS derives
+  # this from too, by way of `services.openssh.hostKeys`. finix says the same
+  # thing as an sshd_config key, so reading the setting rather than naming a path
+  # means this follows `services.openssh.hostKeyPath` wherever a host puts it.
+  defaultIdentityPaths = lib.optionals (config.services.openssh.enable or false) (
+    config.services.openssh.settings.HostKey or [ ]
+  );
 
   mountCommand = ''
     grep -q "${cfg.secretsMountPoint} ramfs" /proc/mounts ||
@@ -250,7 +249,7 @@ in
       type = lib.types.listOf lib.types.path;
       default = defaultIdentityPaths;
       defaultText = lib.literalExpression ''
-        the host's default openssh host keys when `services.openssh.enable`, else [ ]
+        config.services.openssh.settings.HostKey when `services.openssh.enable`, else [ ]
       '';
       description = ''
         Paths to keys used as identities in age decryption.

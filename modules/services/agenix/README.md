@@ -72,10 +72,11 @@ The `agenix` CLI is driven from the flake, not from here.
   creates. finix declares no such group, so this defaults to `root`. Point it
   at a group of your own if unprivileged services need to traverse the mount
   point.
-- **`age.identityPaths`** — NixOS derives the default from
-  `services.openssh.hostKeys`. finix's openssh module takes a freeform
-  `settings` and exposes no such list, so the default is the two paths sshd
-  generates by default when `services.openssh.enable` is set, and `[ ]`
-  otherwise. Set it explicitly if your host keys live elsewhere.
+- **`age.identityPaths`** — same idea as NixOS, read from a different place.
+  NixOS derives the default from `services.openssh.hostKeys`; finix says the
+  same thing as the `HostKey` sshd_config setting, so the default here is
+  `config.services.openssh.settings.HostKey` when `services.openssh.enable` is
+  set, and `[ ]` otherwise. That follows `services.openssh.hostKeyPath`, so a
+  host which moves its key does not have to repeat itself here.
 - **Darwin** — dropped. The upstream module branches throughout on
   `isDarwin`; none of it applies here.
