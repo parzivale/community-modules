@@ -47,11 +47,15 @@ rec {
   getAllFiles =
     stateConfig: stateConfig.files ++ (builtins.concatLists (getUserFiles stateConfig.users));
 
-  # produces shell commands for all bind mounts to run in the initrd after mount-all.
-  # doing everything here means bind mounts persist through switch_root, so all paths are
-  # available from the very start of stage 2.
-  mkFinitInitrdMountCmds =
-    _preserveAt: stateConfig:
+  # produces the shell commands for all bind mounts and symlinks of one preserved root.
+  #
+  # `prefix` is where that root is mounted when the commands run: "/sysroot" in an initrd,
+  # where doing the work before switch_root means the paths are available from the very start
+  # of stage 2, and "" on a machine with no initrd, where the root is already the root and the
+  # same commands run against it directly. Symlink targets are never prefixed - they are
+  # resolved in the final namespace either way.
+  mkMountCmds =
+    prefix: _preserveAt: stateConfig:
     let
       allDirectories = getAllDirectories stateConfig;
       allFiles = getAllFiles stateConfig;
@@ -59,8 +63,6 @@ rec {
       symlinkDirs = builtins.filter (d: d.how == "symlink") allDirectories;
       bindmountFiles = builtins.filter (f: f.how == "bindmount") allFiles;
       symlinkFiles = builtins.filter (f: f.how == "symlink") allFiles;
-
-      prefix = "/sysroot";
 
       par = cmds: "( ${lib.concatStringsSep "; " cmds} ) &";
 
