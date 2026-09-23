@@ -33,6 +33,21 @@ let
           home.activation.installPackages = lib.mkForce (lib.hm.dag.entryAfter [ "writeBoundary" ] "");
         }
       )
+      # Who the user is and where their home is are facts the system already
+      # holds, so read them from there rather than making every configuration
+      # repeat them. Defaults, so a user whose home is somewhere else says so.
+      (
+        {
+          lib,
+          osConfig,
+          name,
+          ...
+        }:
+        {
+          home.username = lib.mkDefault name;
+          home.homeDirectory = lib.mkDefault (osConfig.users.users.${name}.home or "/home/${name}");
+        }
+      )
     ];
     specialArgs = {
       inherit pkgs;
