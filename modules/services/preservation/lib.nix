@@ -66,6 +66,26 @@ rec {
 
       par = cmds: "( ${lib.concatStringsSep "; " cmds} ) &";
 
+      # The options carry ownership for a preserved path and for the parent that has to be
+      # made to hold it, and nothing was applying either: every directory arrived through
+      # `mkdir -p` or `mount --mkdir`, which run as root here - in the initrd, before there is
+      # a session or a login - so a user's own directories came out owned by root.
+      #
+      # /home/bella/.config is the case that shows it. It exists only because something
+      # preserved a path inside it, so nothing else creates it and nothing else chowns it;
+      # the user's home is made by tmpfiles and this is one level below that. A compositor
+      # then cannot write its own configuration into its own home.
+      own =
+        {
+          user,
+          group,
+          mode,
+        }:
+        path: [
+          "chown ${user}:${group} ${path}"
+          "chmod ${mode} ${path}"
+        ];
+
       dirCmds = map (
         dirConfig:
         let
@@ -79,10 +99,14 @@ rec {
             dirConfig.directory
           ];
         in
-        par [
-          "mkdir -p ${persistentPath}"
-          "mount --mkdir --bind ${persistentPath} ${volatilePath}"
-        ]
+        par (
+          [
+            "mkdir -p ${persistentPath}"
+            "mount --mkdir --bind ${persistentPath} ${volatilePath}"
+          ]
+          ++ own dirConfig.parent (parentDirectory volatilePath)
+          ++ own dirConfig volatilePath
+        )
       ) bindmountDirs;
 
       symlinkDirCmds = map (
@@ -103,11 +127,12 @@ rec {
           ];
         in
         par (
-          lib.optionals dirConfig.createLinkTarget [ "mkdir -p ${persistentPath}" ]
-          ++ [
-            "mkdir -p ${parentDirectory volatilePath}"
-            "ln -sf ${target} ${volatilePath}"
-          ]
+          lib.optionals dirConfig.createLinkTarget (
+            [ "mkdir -p ${persistentPath}" ] ++ own dirConfig persistentPath
+          )
+          ++ [ "mkdir -p ${parentDirectory volatilePath}" ]
+          ++ own dirConfig.parent (parentDirectory volatilePath)
+          ++ [ "ln -sf ${target} ${volatilePath}" ]
         )
       ) symlinkDirs;
 
@@ -124,13 +149,19 @@ rec {
             fileConfig.file
           ];
         in
-        par [
-          "mkdir -p ${parentDirectory persistentPath}"
-          "touch ${persistentPath}"
-          "mkdir -p ${parentDirectory volatilePath}"
-          "touch ${volatilePath}"
-          "mount --bind ${persistentPath} ${volatilePath}"
-        ]
+        par (
+          [
+            "mkdir -p ${parentDirectory persistentPath}"
+            "touch ${persistentPath}"
+            "mkdir -p ${parentDirectory volatilePath}"
+          ]
+          ++ own fileConfig.parent (parentDirectory volatilePath)
+          ++ [
+            "touch ${volatilePath}"
+            "mount --bind ${persistentPath} ${volatilePath}"
+          ]
+          ++ own fileConfig persistentPath
+        )
       ) bindmountFiles;
 
       symlinkFileCmds = map (
