@@ -34,6 +34,9 @@ in
   imports = [
     modules.limine
     modules.rtkit
+    # A sibling in this repository rather than a finix module, so a path: `modules` is finix's
+    # registry and does not carry what lives here.
+    ../../services/speakersafetyd
   ];
 
   options = {
@@ -171,26 +174,50 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        # The whole reason this file does not simply declare and forget. `speakersafetyd`
-        # implements the Smart Amp protection model, and asahi's UCM configuration carries the
-        # limits it enforces against; pipewire on finix is not supervised at all yet, its
-        # module laying down configuration and starting nothing. Sound that comes up without
-        # those is sound that can damage the speakers, so it is refused here rather than
-        # discovered later.
-        assertion = config.systemd.packages == [ ];
+        # What remains of the reason this file does not simply declare and forget.
+        # `speakersafetyd` is handled now - a real unit, see `services.speakersafetyd` - but it
+        # is half of the protection. The other half is asahi's UCM configuration, which carries
+        # the routing and the limits the daemon enforces against, and that reaches the speakers
+        # only through pipewire and wireplumber. On finix those are not supervised at all:
+        # `programs.pipewire` lays down configuration and starts nothing.
+        #
+        # So sound is still refused, and for the narrower reason. Audio that comes up with
+        # protection running but the wrong routing is not obviously safer than audio with no
+        # protection at all.
+        assertion = config.services.pipewire == { };
+        message = ''
+          nixos-apple-silicon configures pipewire and wireplumber, which finix does not
+          supervise: `programs.pipewire` writes configuration and starts nothing, and there is
+          no systemd user session to read the units asahi sets ALSA_CONFIG_UCM2 on.
+
+          speakersafetyd is no longer the blocker - `services.speakersafetyd` is a real unit
+          now - but it is only half of the protection. The other half is asahi's UCM
+          configuration, which carries the routing and the volume limits the daemon enforces
+          against, and it reaches the hardware through pipewire.
+
+          What is left: pipewire and wireplumber as session services, with
+          ALSA_CONFIG_UCM2 = ${
+            config.environment.variables.ALSA_CONFIG_UCM2 or "<alsa-ucm-conf-asahi>"
+          } in the environment of both.
+
+          Until then, leave sound off: `hardware.asahi.setupAsahiSound = false`.
+        '';
+      }
+      {
+        # Anything else arriving in `systemd.packages` is a unit nobody has looked at, and this
+        # file's whole argument is that a unit nobody has looked at should not be dropped
+        # quietly. speakersafetyd is the one that has been.
+        assertion = lib.all (p: (p.pname or p.name) == "speakersafetyd") config.systemd.packages;
         message = ''
           nixos-apple-silicon wants units from ${
-            lib.concatMapStringsSep ", " (p: p.pname or p.name) config.systemd.packages
-          }, which finix cannot read.
+            lib.concatMapStringsSep ", " (p: p.pname or p.name) (
+              lib.filter (p: (p.pname or p.name) != "speakersafetyd") config.systemd.packages
+            )
+          }, which finix cannot read and which nothing here has translated.
 
-          Where that is speakersafetyd - it is, on this hardware - do not work around this.
-          It implements the Smart Amp protection model, and driving these speakers without it
-          can damage them. Sound needs three things finix does not have yet: speakersafetyd as
-          a providers.services unit, pipewire and wireplumber supervised as session services,
-          and ALSA_CONFIG_UCM2 reaching both of them.
-
-          Until then, leave sound off: `hardware.asahi.enable` with
-          `hardware.asahi.setupAsahiSound = false`.
+          Look at what those units do before working around this. The reason this file refuses
+          rather than ignoring is that one of these - speakersafetyd, now handled - is what
+          keeps the speakers from being driven past what they can take.
         '';
       }
     ];
@@ -206,6 +233,14 @@ in
     services.rtkit.enable = lib.mkIf config.security.rtkit.enable true;
 
     services.udev.packages = lib.mkIf (config.services.udev.extraHwdb != "") [ hwdbPackage ];
+
+    # `systemd.packages = [ speakersafetyd ]` is what asahi says; this is what it means. The
+    # unit in that package cannot be read here, so the daemon has a finix module of its own and
+    # this turns the one into the other - matched by name, so a future package arriving in that
+    # list is noticed by the assertion rather than silently dropped.
+    services.speakersafetyd.enable = lib.mkIf (lib.any (
+      p: (p.pname or p.name) == "speakersafetyd"
+    ) config.systemd.packages) true;
 
     # `schedutil` and the rest are set once, early, for every cpu that has a governor to set.
     # A oneshot rather than a service: it writes and finishes.
