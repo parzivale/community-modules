@@ -80,6 +80,7 @@ rec {
           user,
           group,
           mode,
+          ...
         }:
         path: [
           "chown ${user}:${group} ${path}"
