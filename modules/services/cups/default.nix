@@ -38,7 +38,12 @@ let
   };
 
   # Default cupsd.conf — only placed if /etc/cups/cupsd.conf doesn't exist
-  defaultCupsdConf = pkgs.writeText "cupsd.conf" ''
+  # A string rather than `pkgs.writeText`: its one use is the tmpfiles rule below,
+  # which wants the contents. Going through the store to read them back is
+  # import-from-derivation - the file has to be built before the evaluation naming
+  # it can finish, so a machine of another architecture cannot be evaluated without
+  # a builder for it.
+  defaultCupsdConf = ''
     LogLevel info
     Listen localhost:631
     Listen /run/cups/cups.sock
@@ -243,7 +248,7 @@ in
         # which is the behaviour that rule was after.
         {
           path = "/etc/cups/cupsd.conf";
-          type.file.argument = builtins.readFile defaultCupsdConf;
+          type.file.argument = defaultCupsdConf;
         }
         {
           path = "/etc/cups/snmp.conf";
