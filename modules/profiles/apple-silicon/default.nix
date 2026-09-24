@@ -13,6 +13,7 @@
 # supervised properly.
 {
   config,
+  options,
   lib,
   pkgs,
   modules,
@@ -174,33 +175,23 @@ in
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        # What remains of the reason this file does not simply declare and forget.
-        # `speakersafetyd` is handled now - a real unit, see `services.speakersafetyd` - but it
-        # is half of the protection. The other half is asahi's UCM configuration, which carries
-        # the routing and the limits the daemon enforces against, and that reaches the speakers
-        # only through pipewire and wireplumber. On finix those are not supervised at all:
-        # `programs.pipewire` lays down configuration and starts nothing.
-        #
-        # So sound is still refused, and for the narrower reason. Audio that comes up with
-        # protection running but the wrong routing is not obviously safer than audio with no
-        # protection at all.
-        assertion = config.services.pipewire == { };
+        # Sound is no longer refused, so this is what replaced the refusal: a check that the
+        # forward above has somewhere to land. Two pipewire modules exist for finix and only
+        # one of them takes `configPackages` - community-modules'. Forwarding asahi-audio into
+        # the other silently drops it, and what is dropped is the routing and the volume limits
+        # `speakersafetyd` enforces against. That failure would be inaudible until it was not.
+        assertion = config.services.pipewire == { } || options.programs.pipewire ? configPackages;
         message = ''
-          nixos-apple-silicon configures pipewire and wireplumber, which finix does not
-          supervise: `programs.pipewire` writes configuration and starts nothing, and there is
-          no systemd user session to read the units asahi sets ALSA_CONFIG_UCM2 on.
+          nixos-apple-silicon's sound setup delivers asahi-audio through pipewire and
+          wireplumber `configPackages`, and the pipewire module in this configuration has no
+          such option - so it is finix's rather than community-modules'.
 
-          speakersafetyd is no longer the blocker - `services.speakersafetyd` is a real unit
-          now - but it is only half of the protection. The other half is asahi's UCM
-          configuration, which carries the routing and the volume limits the daemon enforces
-          against, and it reaches the hardware through pipewire.
+          asahi-audio carries the filters and the routing that speakersafetyd enforces against.
+          Without it the daemon is protecting speakers that are being driven by the wrong
+          profile, which is worse than either alone.
 
-          What is left: pipewire and wireplumber as session services, with
-          ALSA_CONFIG_UCM2 = ${
-            config.environment.variables.ALSA_CONFIG_UCM2 or "<alsa-ucm-conf-asahi>"
-          } in the environment of both.
-
-          Until then, leave sound off: `hardware.asahi.setupAsahiSound = false`.
+          Import `community-modules.nixosModules.pipewire` instead, and make sure something
+          supervises pipewire and wireplumber - neither module starts them.
         '';
       }
       {
@@ -241,6 +232,23 @@ in
     services.speakersafetyd.enable = lib.mkIf (lib.any (
       p: (p.pname or p.name) == "speakersafetyd"
     ) config.systemd.packages) true;
+
+    # asahi-audio, which is the other half of the speaker protection: the filters and the
+    # routing that `speakersafetyd` enforces against, delivered as pipewire and wireplumber
+    # configuration. This is the forward that makes it arrive.
+    #
+    # `pulse.enable` is not forwarded and has nowhere to go: this module set has no such
+    # option, pipewire-pulse being a process to run rather than a flag to set. Whoever
+    # supervises pipewire supervises that too.
+    #
+    # Nor are the four `systemd.services`/`systemd.user.services` entries asahi uses to put
+    # ALSA_CONFIG_UCM2 in the daemons' environment. It sets `environment.variables` as well,
+    # which finix renders to /etc/profile.d/session-vars.sh - so a session that reads the
+    # system environment gets the variable without any unit being named.
+    programs.pipewire = {
+      configPackages = config.services.pipewire.configPackages or [ ];
+      wireplumber.configPackages = config.services.pipewire.wireplumber.configPackages or [ ];
+    };
 
     # `schedutil` and the rest are set once, early, for every cpu that has a governor to set.
     # A oneshot rather than a service: it writes and finishes.

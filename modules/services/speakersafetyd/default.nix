@@ -84,10 +84,13 @@ in
     providers.services.tmpfiles.rules = [
       {
         path = "/run/speakersafetyd";
-        type = "directory";
-        user = "speakersafetyd";
-        group = "speakersafetyd";
-        mode = "0755";
+        # `mode`, `user` and `group` belong to the kind rather than to the rule: what they mean
+        # depends on what is being created.
+        type.directory = {
+          user = "speakersafetyd";
+          group = "speakersafetyd";
+          mode = "0755";
+        };
       }
     ];
 
