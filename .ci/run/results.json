@@ -1,0 +1,26 @@
+{
+  "system": "x86_64-linux",
+  "results": [
+    {"module": "amnezia-vpn", "test": "eval", "kind": "eval", "ok": true},
+    {"module": "bootchart", "test": "collects-boot", "kind": "eval", "ok": true},
+    {"module": "cups", "test": "daemon-starts", "kind": "eval", "ok": true},
+    {"module": "dinit", "test": "system-services", "kind": "eval", "ok": true},
+    {"module": "dinit", "test": "user-services", "kind": "eval", "ok": true},
+    {"module": "fastfetch", "test": "runs", "kind": "eval", "ok": true},
+    {"module": "gamescope", "test": "eval", "kind": "eval", "ok": true},
+    {"module": "home-manager", "test": "user-files", "kind": "eval", "ok": true},
+    {"module": "laptop", "test": "eval", "kind": "eval", "ok": true},
+    {"module": "minimal", "test": "boots", "kind": "eval", "ok": true},
+    {"module": "nix-ld", "test": "dynamic-loader", "kind": "eval", "ok": true},
+    {"module": "openrgb", "test": "eval", "kind": "eval", "ok": true},
+    {"module": "pipewire", "test": "eval", "kind": "eval", "ok": true},
+    {"module": "preservation", "test": "eval", "kind": "eval", "ok": true},
+    {"module": "river", "test": "eval", "kind": "eval", "ok": true},
+    {"module": "soteria", "test": "eval", "kind": "eval", "ok": true},
+    {"module": "steam", "test": "eval", "kind": "eval", "ok": true},
+    {"module": "tailscale", "test": "daemon-starts", "kind": "eval", "ok": true},
+    {"module": "v2rayn", "test": "eval", "kind": "eval", "ok": true},
+    {"module": "xinetd", "test": "echo", "kind": "eval", "ok": true},
+    {"module": "yarr", "test": "serves-http", "kind": "eval", "ok": true}
+  ]
+}

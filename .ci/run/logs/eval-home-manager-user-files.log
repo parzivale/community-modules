@@ -1,0 +1,3 @@
+evaluation warning: stdenv.isLinux is deprecated, use stdenv.hostPlatform.isLinux instead
+evaluation warning: stdenv.isDarwin is deprecated, use stdenv.hostPlatform.isDarwin instead
+/nix/store/7aibx17rqagwpp2hdy094yf1i2s36vcl-finix-compat-eval-home-manager.user-files
