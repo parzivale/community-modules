@@ -26,7 +26,7 @@ let
   # So the unit names a store path which does exist then, and that execs the wrapper once the
   # boot has got far enough to have made one.
   launcher = pkgs.writeShellScript "speakersafetyd-launch" ''
-    exec /run/wrappers/bin/speakersafetyd ""
+    exec /run/wrappers/bin/speakersafetyd "$@"
   '';
 in
 {
