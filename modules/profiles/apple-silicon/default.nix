@@ -28,13 +28,17 @@ let
   hwdbPackage = pkgs.writeTextDir "lib/udev/hwdb.d/90-apple-silicon.hwdb" config.services.udev.extraHwdb;
 in
 {
-  # The two finix modules this writes into, named because it writes into them:
-  # `programs.limine` takes the blob that boots the machine, and `services.rtkit` is where
-  # nixos' `security.rtkit` lands. Importing them declares their options; each is still gated
-  # on its own `enable`.
+  # The finix modules this writes into, named because it writes into them: `programs.limine`
+  # takes the blob that boots the machine, `services.rtkit` is where nixos' `security.rtkit`
+  # lands, and `powerManagement` holds the cpu governor. Importing them declares their options;
+  # each is still gated on its own `enable`.
   imports = [
     modules.limine
     modules.rtkit
+
+    # `powerManagement.cpuFreqGovernor`, which asahi sets to `schedutil` on these machines.
+    # Declared by finix rather than here now, so this imports it instead of shadowing it.
+    modules.power-management
     # A sibling in this repository rather than a finix module, so a path: `modules` is finix's
     # registry and does not carry what lives here.
     ../../services/speakersafetyd
@@ -74,18 +78,6 @@ in
       default = { };
       internal = true;
       description = "Accepted and ignored: finix does not boot systemd-boot. See `boot.loader.limine.additionalFiles`.";
-    };
-
-    # `schedutil`, which the asahi kernel wants and which no `powerManagement` namespace
-    # exists here to hold. Implemented below rather than dropped: the default governor on
-    # these machines is a battery-life and thermal decision.
-    powerManagement.cpuFreqGovernor = lib.mkOption {
-      type = with lib.types; nullOr str;
-      default = null;
-      description = ''
-        The CPU frequency governor to select at startup, written to every cpu's
-        `scaling_governor`.
-      '';
     };
 
     # nixos turns this into an ACL helper for realtime scheduling; finix has the same daemon
@@ -248,27 +240,6 @@ in
     programs.pipewire = {
       configPackages = config.services.pipewire.configPackages or [ ];
       wireplumber.configPackages = config.services.pipewire.wireplumber.configPackages or [ ];
-    };
-
-    # `schedutil` and the rest are set once, early, for every cpu that has a governor to set.
-    # A oneshot rather than a service: it writes and finishes.
-    providers.services.units = lib.mkIf (config.powerManagement.cpuFreqGovernor != null) {
-      cpufreq-governor = {
-        description = "select the cpu frequency governor";
-
-        requires = [ "sysinit" ];
-
-        type.oneshot.command = toString (
-          pkgs.writeShellScript "cpufreq-governor" ''
-            set -eu
-
-            for policy in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-              [ -w "$policy" ] || continue
-              echo ${config.powerManagement.cpuFreqGovernor} > "$policy"
-            done
-          ''
-        );
-      };
     };
   };
 }
