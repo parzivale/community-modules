@@ -106,6 +106,45 @@ in
 
     environment.pathsToLink = [ "/etc/profile.d" ];
 
+    # The profile directory activation needs, which it looks for and does not create:
+    #
+    #   Could not find suitable profile directory, tried
+    #     /home/bella/.local/state/nix/profiles and /nix/var/nix/profiles/per-user/bella
+    #
+    # and exits 1 on not finding one. On NixOS nix's own tmpfiles rules make it; there is no
+    # equivalent here, so activation failed on every boot of every machine using this module -
+    # immediately, and quietly. The task is simply `done (status=1)`, its readiness companion
+    # waits for a success which is not coming, and nothing says that every file home-manager
+    # would have linked is absent. What that looks like from the outside is the programs it
+    # configures behaving as though they have no configuration: a compositor starting with
+    # default settings, a themed cursor that is not themed.
+    #
+    # The whole chain is declared rather than just the leaf, because tmpfiles creates missing
+    # parents as root - which would leave a root-owned ~/.local in someone's home directory.
+    providers.services.tmpfiles.rules = lib.concatLists (
+      lib.mapAttrsToList (
+        user: _:
+        let
+          userCfg = config.users.users.${user};
+        in
+        map
+          (path: {
+            path = "${userCfg.home}/${path}";
+            type.directory = {
+              mode = "0755";
+              inherit user;
+              inherit (userCfg) group;
+            };
+          })
+          [
+            ".local"
+            ".local/state"
+            ".local/state/nix"
+            ".local/state/nix/profiles"
+          ]
+      ) cfg.users
+    );
+
     providers.services.units = lib.mapAttrs' (
       user: hmCfg:
       let
@@ -117,7 +156,14 @@ in
         # was `service/syslogd/ready` + `service/nix-daemon/ready`. syslogd is in
         # the head tier; the daemon is named directly because activation builds
         # through it.
-        requires = [ "nix-daemon" ];
+        #
+        # `tmpfiles-setup` for the profile directory above. Both are in the sysinit region and a
+        # tier starts together, so attaching to the level alone leaves this racing the unit which
+        # creates the directory it needs - the same race dbus lost against /run/dbus.
+        requires = [
+          "nix-daemon"
+          "tmpfiles-setup"
+        ];
 
         type.oneshot.command = "${hmCfg.home.activationPackage}/activate";
 
