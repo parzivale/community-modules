@@ -14,7 +14,27 @@ let
 
   inherit (utils) escapePath;
 
-  mkCmds = prefix: lib.flatten (lib.mapAttrsToList (mkMountCmds prefix) cfg.preserveAt);
+  # The ids, read straight out of the user database in `config`, because the place these
+  # commands run does not have one - see the note on `own` in lib.nix.
+  #
+  # No fallback to the name: a name is exactly what cannot be resolved there, so falling back to
+  # one would mean generating a command already known to fail, in a subshell whose status nothing
+  # checks. If an id is not statically known this should stop at evaluation and say why.
+  idsOf =
+    { user, group, ... }:
+    let
+      uid = config.users.users.${user}.uid;
+      gid = config.users.groups.${group}.gid;
+      static =
+        what: name: id:
+        if id != null then
+          toString id
+        else
+          throw "preservation: ${what} '${name}' has no static id, and the ownership pass runs where names cannot be resolved - give it one";
+    in
+    "${static "user" user uid}:${static "group" group gid}";
+
+  mkCmds = prefix: lib.flatten (lib.mapAttrsToList (mkMountCmds idsOf prefix) cfg.preserveAt);
 
   mkScript =
     name: prefix:

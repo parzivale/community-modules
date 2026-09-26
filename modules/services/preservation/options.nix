@@ -331,7 +331,17 @@ let
               ])
             );
           default = [ ];
-          apply = map (d: d // { directory = concatTwoPaths attrs.config.home d.directory; });
+          # `ownFrom` rides along so the ownership pass knows which prefix of these paths is
+          # the user's home - the boundary it must not reach past. Added in `apply`, which runs
+          # after the submodule has been checked, so it needs no option of its own.
+          apply = map (
+            d:
+            d
+            // {
+              directory = concatTwoPaths attrs.config.home d.directory;
+              ownFrom = attrs.config.home;
+            }
+          );
           description = ''
             Specify a list of directories that should be preserved for this user.
             The paths are interpreted relative to {option}`home`.
@@ -351,7 +361,14 @@ let
               ])
             );
           default = [ ];
-          apply = map (f: f // { file = concatTwoPaths attrs.config.home f.file; });
+          apply = map (
+            f:
+            f
+            // {
+              file = concatTwoPaths attrs.config.home f.file;
+              ownFrom = attrs.config.home;
+            }
+          );
           description = ''
             Specify a list of files that should be preserved for this user.
             The paths are interpreted relative to {option}`home`.

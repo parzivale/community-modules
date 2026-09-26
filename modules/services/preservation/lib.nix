@@ -37,6 +37,20 @@ rec {
     in
     if len < 1 then "/" else concatPaths ([ "/" ] ++ (lib.lists.sublist 0 (len - 1) parts));
 
+  # every directory strictly between `boundary` and `path`, outermost first, with neither end
+  # included. The boundary is a path that already exists and is already owned correctly; the
+  # result is what `mkdir -p` would have had to create to reach `path`.
+  ancestorsBetween =
+    boundary: path:
+    let
+      base = lib.removeSuffix "/" boundary;
+      parts = builtins.filter (p: p != "") (
+        lib.splitString "/" (lib.removePrefix base (lib.removeSuffix "/" path))
+      );
+      n = builtins.length parts;
+    in
+    map (i: concatPaths ([ base ] ++ (lib.lists.sublist 0 (i + 1) parts))) (lib.lists.range 0 (n - 2));
+
   getUserDirectories = lib.mapAttrsToList (_: userConfig: userConfig.directories);
   getUserFiles = lib.mapAttrsToList (_: userConfig: userConfig.files);
 
@@ -55,7 +69,7 @@ rec {
   # same commands run against it directly. Symlink targets are never prefixed - they are
   # resolved in the final namespace either way.
   mkMountCmds =
-    prefix: _preserveAt: stateConfig:
+    ids: prefix: _preserveAt: stateConfig:
     let
       allDirectories = getAllDirectories stateConfig;
       allFiles = getAllFiles stateConfig;
@@ -75,17 +89,37 @@ rec {
       # preserved a path inside it, so nothing else creates it and nothing else chowns it;
       # the user's home is made by tmpfiles and this is one level below that. A compositor
       # then cannot write its own configuration into its own home.
-      own =
-        {
-          user,
-          group,
-          mode,
-          ...
-        }:
-        path: [
-          "chown ${user}:${group} ${path}"
-          "chmod ${mode} ${path}"
-        ];
+      # Numeric ids, not names. These commands run in the initrd, which carries no /etc/passwd
+      # and no /etc/group - so `chown bella:users` there cannot resolve either name and fails,
+      # inside a backgrounded subshell whose status nothing checks. Every preserved path of
+      # every user stayed root-owned and nothing said so.
+      #
+      # `root:root` kept working throughout, which is why only the users' own paths were wrong,
+      # and why this took a while to see. What it breaks first is nix: an unprivileged user
+      # cannot create ~/.local/state/nix underneath a root-owned ~/.local, so `nix-env` fails,
+      # so home-manager cannot find a profile directory, so activation stops before it links
+      # anything. Which presents as a compositor starting with no configuration at all.
+      own = entry: path: [
+        "chown ${ids entry} ${path}"
+        "chmod ${entry.mode} ${path}"
+      ];
+
+      # Every directory created on the way to a preserved path, not only the last one.
+      # `mkdir -p` makes them all as root, and chowning just the immediate parent corrected
+      # ~/.local/state while leaving ~/.local itself - which is enough for everything above.
+      #
+      # A user's entry carries the home its path is relative to, and that home is the boundary:
+      # it is made by tmpfiles and already owned correctly. Entries that are not a user's keep
+      # the single-parent behaviour, because /var and / are not this module's to reassign.
+      createdParents =
+        entry: path:
+        if entry ? ownFrom then
+          ancestorsBetween (concatPaths [
+            prefix
+            entry.ownFrom
+          ]) path
+        else
+          [ (parentDirectory path) ];
 
       dirCmds = map (
         dirConfig:
@@ -105,7 +139,7 @@ rec {
             "mkdir -p ${persistentPath}"
             "mount --mkdir --bind ${persistentPath} ${volatilePath}"
           ]
-          ++ own dirConfig.parent (parentDirectory volatilePath)
+          ++ lib.concatMap (own dirConfig.parent) (createdParents dirConfig volatilePath)
           ++ own dirConfig volatilePath
         )
       ) bindmountDirs;
@@ -132,7 +166,7 @@ rec {
             [ "mkdir -p ${persistentPath}" ] ++ own dirConfig persistentPath
           )
           ++ [ "mkdir -p ${parentDirectory volatilePath}" ]
-          ++ own dirConfig.parent (parentDirectory volatilePath)
+          ++ lib.concatMap (own dirConfig.parent) (createdParents dirConfig volatilePath)
           ++ [ "ln -sf ${target} ${volatilePath}" ]
         )
       ) symlinkDirs;
@@ -156,7 +190,7 @@ rec {
             "touch ${persistentPath}"
             "mkdir -p ${parentDirectory volatilePath}"
           ]
-          ++ own fileConfig.parent (parentDirectory volatilePath)
+          ++ lib.concatMap (own fileConfig.parent) (createdParents fileConfig volatilePath)
           ++ [
             "touch ${volatilePath}"
             "mount --bind ${persistentPath} ${volatilePath}"
