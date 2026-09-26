@@ -106,45 +106,6 @@ in
 
     environment.pathsToLink = [ "/etc/profile.d" ];
 
-    # The profile directory activation needs, which it looks for and does not create:
-    #
-    #   Could not find suitable profile directory, tried
-    #     /home/bella/.local/state/nix/profiles and /nix/var/nix/profiles/per-user/bella
-    #
-    # and exits 1 on not finding one. On NixOS nix's own tmpfiles rules make it; there is no
-    # equivalent here, so activation failed on every boot of every machine using this module -
-    # immediately, and quietly. The task is simply `done (status=1)`, its readiness companion
-    # waits for a success which is not coming, and nothing says that every file home-manager
-    # would have linked is absent. What that looks like from the outside is the programs it
-    # configures behaving as though they have no configuration: a compositor starting with
-    # default settings, a themed cursor that is not themed.
-    #
-    # The whole chain is declared rather than just the leaf, because tmpfiles creates missing
-    # parents as root - which would leave a root-owned ~/.local in someone's home directory.
-    providers.services.tmpfiles.rules = lib.concatLists (
-      lib.mapAttrsToList (
-        user: _:
-        let
-          userCfg = config.users.users.${user};
-        in
-        map
-          (path: {
-            path = "${userCfg.home}/${path}";
-            type.directory = {
-              mode = "0755";
-              inherit user;
-              inherit (userCfg) group;
-            };
-          })
-          [
-            ".local"
-            ".local/state"
-            ".local/state/nix"
-            ".local/state/nix/profiles"
-          ]
-      ) cfg.users
-    );
-
     providers.services.units = lib.mapAttrs' (
       user: hmCfg:
       let
@@ -153,17 +114,29 @@ in
       lib.nameValuePair "hm-activate-${user}" {
         description = "home-manager activation for ${user}";
 
-        # was `service/syslogd/ready` + `service/nix-daemon/ready`. syslogd is in
-        # the head tier; the daemon is named directly because activation builds
-        # through it.
+        # `nix-daemon-socket` rather than `nix-daemon`, because the daemon is ready-on-fork and
+        # that is before it is listening. A client starting in between does not wait for it - it
+        # falls back to treating the store as a local one, tries to create the state directories
+        # as an unprivileged user, and fails.
         #
-        # `tmpfiles-setup` for the profile directory above. Both are in the sysinit region and a
-        # tier starts together, so attaching to the level alone leaves this racing the unit which
-        # creates the directory it needs - the same race dbus lost against /run/dbus.
-        requires = [
-          "nix-daemon"
-          "tmpfiles-setup"
-        ];
+        # Which matters more here than for most callers, because activation does not merely build
+        # through the daemon: it relies on nix to create the profile directory it then looks for.
+        # `nix-env -q > /dev/null 2>&1 || true`, with the comment "Also make sure that the Nix
+        # profiles path is created" - and for a regular user that directory is
+        # $XDG_STATE_HOME/nix/profiles, in their own home, which nix makes itself. Nothing else
+        # needs to create it, on any init system, which is how standalone home-manager works
+        # elsewhere.
+        #
+        # So when that command fails there is no directory and no message either, since the
+        # failure is swallowed by the `|| true`. Activation then stops on
+        #
+        #   Could not find suitable profile directory, tried
+        #     ~/.local/state/nix/profiles and /nix/var/nix/profiles/per-user/<user>
+        #
+        # which reads as a missing directory and is really a missing daemon. Creating the
+        # directories does not fix it; it moves the failure to the next thing the client cannot
+        # do without root.
+        requires = [ "nix-daemon-socket" ];
 
         type.oneshot.command = "${hmCfg.home.activationPackage}/activate";
 
