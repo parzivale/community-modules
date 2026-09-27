@@ -34,14 +34,28 @@ in
     providers.services.units.speakersafetyd = {
       description = "speaker protection daemon";
 
-      # `WantedBy = multi-user.target` in the shipped unit. Nothing requires this in turn,
-      # which is worth being clear-eyed about: the audio stack does not wait for it, so a
-      # machine can be making sound before protection is up. The window is a startup one and
-      # the daemon is the thing that closes it.
+      # `basic`, so the whole userspace above it waits.
+      #
+      # `WantedBy = multi-user.target` in the shipped unit, and that is what this was - which put
+      # it in the same tier as greetd and so concurrent with it. Speaker protection that races
+      # the thing which starts the audio stack is protection that sometimes loses: both want the
+      # card's control elements in the same second, speakersafetyd locks the ones it protects
+      # with `snd_ctl_elem_lock`, and whoever asks second fails.
+      #
+      # A level earlier makes the ordering structural rather than a named edge each audio consumer
+      # has to remember. `multi-user` is not reached until this is up, so everything attached to
+      # it - a display manager, a session, and therefore every user tree - is after it.
+      #
+      # The cost is that a machine which cannot protect its speakers does not reach `multi-user`,
+      # so a failure here takes the graphical session with it rather than leaving it silent. On
+      # hardware that needs this that is the right way round, and it is the same judgement the
+      # module already makes by asserting rather than dropping the unit quietly.
+      #
       # `suid-sgid-wrappers` as well as the tier: the launcher execs the wrapper, so the wrapper
-      # has to be there by the time it runs.
+      # has to be there by the time it runs. It attaches to no level of its own, so it is
+      # available in any tier.
       requires = [
-        "multi-user"
+        "basic"
         "suid-sgid-wrappers"
       ];
 
