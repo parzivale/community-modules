@@ -106,6 +106,40 @@ in
 
     environment.pathsToLink = [ "/etc/profile.d" ];
 
+    # The user's own directories on the cursor search path, because this is what puts themes
+    # there: `home.pointerCursor` writes ~/.icons/<name> and ~/.icons/default, and nothing else
+    # on the system knows that happened.
+    #
+    # libXcursor's built-in path includes ~/.icons, but finix sets XCURSOR_PATH explicitly - and
+    # setting it replaces the built-in path rather than extending it, so the default of
+    #
+    #   /run/current-system/sw/share/icons:/run/current-system/sw/share/pixmaps
+    #
+    # names two directories a home-manager cursor theme is never in. A compositor asking
+    # libXcursor for the configured theme finds nothing and falls back to its own built-in
+    # cursor, while gtk applications look right - they read gtk-cursor-theme-name from
+    # settings.ini and resolve it by another route, which is what makes this look like a
+    # compositor bug rather than a path one.
+    #
+    # `@{HOME}`, which is a pam_env item - `$HOME` would be written through literally and never
+    # expand. The per-profile entries go in for the same reason nixos has them: a home-manager
+    # profile lives under ~/.local/state/nix/profile.
+    #
+    # `mkBefore` because ordering is the point: nixos puts the home directories first, with
+    # the comment "These are preferred so they come first in the list", and a theme installed in
+    # both places should resolve to the user's.
+    #
+    # Declared here rather than in finix, whose default is only wrong for a machine where
+    # something installs into the home, and here rather than in a theming module, which would
+    # leave a machine with a cursor theme and no theming module broken in the same way.
+    security.pam.environment.XCURSOR_PATH.default = lib.mkBefore [
+      "@{HOME}/.icons"
+      "@{HOME}/.local/share/icons"
+      "@{HOME}/.local/state/nix/profile/share/icons"
+      "@{HOME}/.nix-profile/share/icons"
+      "/etc/profiles/per-user/@{PAM_USER}/share/icons"
+    ];
+
     providers.services.units = lib.mapAttrs' (
       user: hmCfg:
       let
