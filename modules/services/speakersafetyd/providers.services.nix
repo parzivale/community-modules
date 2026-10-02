@@ -100,23 +100,31 @@ in
         };
       })
 
-      # the session service: no account, no wrapper, no runtime directory, and the one edge
-      # none of that could buy
+      # the session service: the same wrapper, the same capability, and the one edge a system
+      # unit could not express
       (lib.mkIf (cfg.session != null) {
         providers.services.users.${cfg.session}.units.speakersafetyd = {
           description = "speaker protection daemon";
 
-          # The whole point. The sound server configures the card, and this reads what it
-          # configured; started first it reads a rate which changes underneath it and panics.
-          # A system unit cannot name a user unit, so this edge exists only here.
+          # The whole point. The sound server configures the card and this reads what it
+          # configured; started first it reads a rate which changes underneath it and panics. A
+          # system unit cannot name a user unit, so this edge exists only here.
+          #
+          # `pipewire` resolves to the readiness companion rather than the process, and
+          # pipewire's readiness is a socket it has to answer on - so this starts when the sound
+          # server is actually serving, not when it has been forked.
           requires = [ "pipewire" ];
 
-          # The binary rather than the wrapper, and that is not a compromise. The wrapper
-          # grants CAP_SYS_NICE, which `sched_setattr` wants and does without - the failure is
-          # a `warn!` and the loop runs with more jitter. The wrapper is also gated on a group
-          # this user is not in, and putting them in it would be granting the capability to
-          # the session at large to save the daemon some jitter.
-          type.service.command = lib.concatStringsSep " " ([ (lib.getExe cfg.package) ] ++ args);
+          # The wrapper, not the binary, and that was learned the hard way: without CAP_SYS_NICE
+          # the loop misses the driver's watchdog deadline under load, the speakers lock
+          # themselves, and every restart does it again. See the note beside the wrapper.
+          #
+          # Named directly rather than through a launcher, unlike the system unit. finit checks a
+          # command exists when it parses its configuration, which is before /run/wrappers is
+          # populated; this supervisor is started by a session, long after.
+          type.service.command = lib.concatStringsSep " " (
+            [ "/run/wrappers/bin/speakersafetyd" ] ++ args
+          );
         };
       })
     ]
