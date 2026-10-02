@@ -209,8 +209,25 @@ in
 
           type.service = {
             command = "${tailscaledScript}";
-            # `notify = "systemd"` upstream: tailscaled speaks sd_notify.
-            readiness = "notify";
+
+            # Best first, and the contract takes the best the implementation can observe.
+            #
+            # `notify = "systemd"` upstream: tailscaled speaks sd_notify, and where that can be
+            # watched it is the daemon's own word for being up. Only two implementations can
+            # watch it, though, and naming it alone made this unit unrunnable on the other four
+            # - an assertion at evaluation naming tailscaled, for a readiness nothing on the
+            # machine actually consumes.
+            #
+            # The socket is what everything which does consume it talks to. `tailscale up` and
+            # `tailscale status` are LocalAPI clients, so "the socket answers" is the condition
+            # they need, and `waitFor.socket` connects rather than checking the path exists.
+            # It resolves fractionally earlier than READY=1 - the daemon considers itself up
+            # somewhat after it is listening - which is the right trade for a fallback: a
+            # consumer gets a working API either way.
+            readiness = [
+              "notify"
+              { waitFor.socket.path = "/run/tailscale/tailscaled.sock"; }
+            ];
           };
 
           path = [
