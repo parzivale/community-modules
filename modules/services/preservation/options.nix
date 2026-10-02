@@ -1,10 +1,11 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }:
 let
-  inherit (import ./lib.nix { inherit lib; })
+  inherit (import ./lib.nix { inherit lib pkgs; })
     concatTwoPaths
     ;
 

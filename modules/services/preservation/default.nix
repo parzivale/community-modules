@@ -8,7 +8,7 @@
 let
   cfg = config.preservation;
 
-  inherit (import ./lib.nix { inherit lib; })
+  inherit (import ./lib.nix { inherit lib pkgs; })
     mkMountCmds
     ;
 
@@ -36,12 +36,14 @@ let
 
   mkCmds = prefix: lib.flatten (lib.mapAttrsToList (mkMountCmds idsOf prefix) cfg.preserveAt);
 
-  mkScript =
-    name: prefix:
-    pkgs.writeScript name ''
-      #!/bin/sh
-      ${lib.concatStringsSep "\n" (mkCmds prefix)}
-    '';
+  # `#!/bin/sh` by store path too, for the same reason the commands are.
+  #
+  # It works where this runs today - an initrd has a shell, and a stage 2 unit runs after
+  # activation has made /bin/sh - but both are the script relying on something outside itself,
+  # and the no-initrd path is where that stops being true. A binary which ran this before
+  # activation would find no /bin at all. `writeShellScript` names an interpreter which is
+  # there whenever the store is.
+  mkScript = name: prefix: pkgs.writeShellScript name (lib.concatStringsSep "\n" (mkCmds prefix));
 
   mountConditions = lib.concatMapStringsSep "," (root: "task/mount-${escapePath root}/success") (
     lib.attrNames cfg.preserveAt

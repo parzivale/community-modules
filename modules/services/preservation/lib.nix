@@ -1,4 +1,30 @@
-{ lib, ... }:
+{ lib, pkgs, ... }:
+let
+  # The commands by store path, because the place these run has no PATH worth the name.
+  #
+  # A finit unit's environment is exactly what its `env` file says, and for this one that is
+  # what `log` contributed and nothing else:
+  #
+  #   PATH=/nix/store/...-sysklogd-2.7.2/bin
+  #
+  # So `mkdir`, `mount`, `chown`, `chmod`, `touch` and `ln` all resolved to nothing, every
+  # subshell failed, and the task never succeeded - which on a machine where the sysinit barrier
+  # waits for it is a boot that stops before syslogd and cannot say why. The initrd path never
+  # showed it: there the commands come from the initrd's own environment rather than from a
+  # unit, so the same script worked and the stage 2 branch was written as though PATH were
+  # inherited from somewhere.
+  #
+  # Naming them outright is the fix rather than giving the unit a PATH, because it removes the
+  # assumption instead of satisfying it: these commands are then the ones this module was built
+  # against wherever the script is run from - an initrd, a unit, or a binary which runs it
+  # before any of that exists.
+  mkdir = "${pkgs.coreutils}/bin/mkdir";
+  chown = "${pkgs.coreutils}/bin/chown";
+  chmod = "${pkgs.coreutils}/bin/chmod";
+  touch = "${pkgs.coreutils}/bin/touch";
+  ln = "${pkgs.coreutils}/bin/ln";
+  mount = "${pkgs.util-linux}/bin/mount";
+in
 rec {
   # concatenates two paths
   # inserts a "/" in between if there is none, removes one if there are two
@@ -100,8 +126,8 @@ rec {
       # so home-manager cannot find a profile directory, so activation stops before it links
       # anything. Which presents as a compositor starting with no configuration at all.
       own = entry: path: [
-        "chown ${ids entry} ${path}"
-        "chmod ${entry.mode} ${path}"
+        "${chown} ${ids entry} ${path}"
+        "${chmod} ${entry.mode} ${path}"
       ];
 
       # Every directory created on the way to a preserved path, not only the last one.
@@ -136,8 +162,8 @@ rec {
         in
         par (
           [
-            "mkdir -p ${persistentPath}"
-            "mount --mkdir --bind ${persistentPath} ${volatilePath}"
+            "${mkdir} -p ${persistentPath}"
+            "${mount} --mkdir --bind ${persistentPath} ${volatilePath}"
           ]
           ++ lib.concatMap (own dirConfig.parent) (createdParents dirConfig volatilePath)
           ++ own dirConfig volatilePath
@@ -163,11 +189,11 @@ rec {
         in
         par (
           lib.optionals dirConfig.createLinkTarget (
-            [ "mkdir -p ${persistentPath}" ] ++ own dirConfig persistentPath
+            [ "${mkdir} -p ${persistentPath}" ] ++ own dirConfig persistentPath
           )
-          ++ [ "mkdir -p ${parentDirectory volatilePath}" ]
+          ++ [ "${mkdir} -p ${parentDirectory volatilePath}" ]
           ++ lib.concatMap (own dirConfig.parent) (createdParents dirConfig volatilePath)
-          ++ [ "ln -sf ${target} ${volatilePath}" ]
+          ++ [ "${ln} -sf ${target} ${volatilePath}" ]
         )
       ) symlinkDirs;
 
@@ -186,14 +212,14 @@ rec {
         in
         par (
           [
-            "mkdir -p ${parentDirectory persistentPath}"
-            "touch ${persistentPath}"
-            "mkdir -p ${parentDirectory volatilePath}"
+            "${mkdir} -p ${parentDirectory persistentPath}"
+            "${touch} ${persistentPath}"
+            "${mkdir} -p ${parentDirectory volatilePath}"
           ]
           ++ lib.concatMap (own fileConfig.parent) (createdParents fileConfig volatilePath)
           ++ [
-            "touch ${volatilePath}"
-            "mount --bind ${persistentPath} ${volatilePath}"
+            "${touch} ${volatilePath}"
+            "${mount} --bind ${persistentPath} ${volatilePath}"
           ]
           ++ own fileConfig persistentPath
         )
@@ -217,10 +243,10 @@ rec {
           ];
         in
         par (
-          lib.optionals fileConfig.createLinkTarget [ "touch ${persistentPath}" ]
+          lib.optionals fileConfig.createLinkTarget [ "${touch} ${persistentPath}" ]
           ++ [
-            "mkdir -p ${parentDirectory volatilePath}"
-            "ln -sf ${target} ${volatilePath}"
+            "${mkdir} -p ${parentDirectory volatilePath}"
+            "${ln} -sf ${target} ${volatilePath}"
           ]
         )
       ) symlinkFiles;
