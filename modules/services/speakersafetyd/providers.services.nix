@@ -43,15 +43,14 @@ let
     exec /run/wrappers/bin/speakersafetyd "$@" 2>&1
   '';
   # the arguments, which are the same wherever it runs
-  args =
-    [
-      "--config-path"
-      "${cfg.package}/share/speakersafetyd/"
-    ]
-    ++ lib.optionals (cfg.maxReduction != null) [
-      "--max-reduction"
-      (toString cfg.maxReduction)
-    ];
+  args = [
+    "--config-path"
+    "${cfg.package}/share/speakersafetyd/"
+  ]
+  ++ lib.optionals (cfg.maxReduction != null) [
+    "--max-reduction"
+    (toString cfg.maxReduction)
+  ];
 in
 {
   config = lib.mkIf cfg.enable (
@@ -122,9 +121,7 @@ in
           # Named directly rather than through a launcher, unlike the system unit. finit checks a
           # command exists when it parses its configuration, which is before /run/wrappers is
           # populated; this supervisor is started by a session, long after.
-          type.service.command = lib.concatStringsSep " " (
-            [ "/run/wrappers/bin/speakersafetyd" ] ++ args
-          );
+          type.service.command = lib.concatStringsSep " " ([ "/run/wrappers/bin/speakersafetyd" ] ++ args);
         };
       })
     ]
