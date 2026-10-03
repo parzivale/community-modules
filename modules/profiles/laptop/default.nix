@@ -98,6 +98,8 @@ in
       "cpu.weight" = 100;
     };
 
+    finit.tmpfiles.clean.enable = true;
+
     environment.systemPackages = [
       pkgs.nixos-rebuild-ng
     ];
@@ -154,7 +156,6 @@ in
     ];
     services.fcron.enable = lib.mkDefault true;
     services.fwupd.enable = lib.mkDefault config.services.udev.enable;
-    services.nftables.enable = lib.mkDefault true;
     services.nix-daemon.enable = true;
     services.polkit.enable = true;
     services.power-profiles-daemon.enable = lib.mkDefault true;
@@ -168,51 +169,10 @@ in
     services.sysklogd.enable = true;
     services.udisks2.enable = lib.mkDefault config.services.udev.enable;
     services.upower.enable = lib.mkDefault true;
+    services.getty.enable = lib.mkDefault true;
 
-    # https://wiki.nftables.org/wiki-nftables/index.php/Quick_reference-nftables_in_10_minutes#Simple_IP/IPv6_Firewall
-    services.nftables.configFile = pkgs.writeText "nftables.conf" ''
-      flush ruleset
-
-      table firewall {
-        chain incoming {
-          type filter hook input priority 0; policy drop;
-
-          # established/related connections
-          ct state established,related accept
-
-          # loopback interface
-          iifname lo accept
-
-          # icmp
-          icmp type echo-request accept
-
-          # open tcp ports: sshd (22)
-          tcp dport { 22 } accept
-        }
-      }
-
-      table ip6 firewall {
-        chain incoming {
-          type filter hook input priority 0; policy drop;
-
-          # established/related connections
-          ct state established,related accept
-
-          # invalid connections
-          ct state invalid drop
-
-          # loopback interface
-          iifname lo accept
-
-          # icmp
-          # routers may also want: mld-listener-query, nd-router-solicit
-          icmpv6 type { echo-request, nd-neighbor-solicit } accept
-
-          # open tcp ports: sshd (22)
-          tcp dport { 22 } accept
-        }
-      }
-    '';
+    services.nftables.enable = lib.mkDefault true;
+    providers.firewall.allowedTCPPorts = [ 22 ]; # sshd
 
     xdg.autostart.enable = lib.mkDefault true;
     xdg.icons.enable = lib.mkDefault true;

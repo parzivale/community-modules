@@ -1,12 +1,12 @@
 {
   config,
   lib,
-  pkgs,
   ...
 }:
 let
-  inherit (import ./lib.nix { inherit lib pkgs; })
+  inherit (import ./lib.nix { inherit lib; })
     concatTwoPaths
+    mkIntermediateUserDirectories
     ;
 
   mountOption = lib.types.submodule {
@@ -271,25 +271,6 @@ let
             and permissions as target of the symlink.
           '';
         };
-        inInitrd = lib.mkOption {
-          type = lib.types.bool;
-          default = false;
-          description = ''
-            Whether to prepare preservation of this file in the initrd.
-
-            ::: {.note}
-            For most files there is no need to enable this option.
-
-            {file}`/etc/machine-id` is an exception because it needs to
-            be populated/read very early.
-            :::
-
-            ::: {.important}
-            Note that both owner and group for this file need to be
-            available in the initrd for permissions to be set correctly.
-            :::
-          '';
-        };
       };
 
       config = {
@@ -332,20 +313,30 @@ let
               ])
             );
           default = [ ];
-          # `ownFrom` rides along so the ownership pass knows which prefix of these paths is
-          # the user's home - the boundary it must not reach past. Added in `apply`, which runs
-          # after the submodule has been checked, so it needs no option of its own.
-          apply = map (
-            d:
-            d
-            // {
-              directory = concatTwoPaths attrs.config.home d.directory;
-              ownFrom = attrs.config.home;
-            }
-          );
+          apply =
+            definedDirectories:
+            let
+              # every directory between the user's home and a preserved path is
+              # created by the module, so it has to belong to the user - otherwise
+              # a preserved `.config/someapp` would leave `.config` owned by root.
+              intermediateDirectorySettings = {
+                how = "_intermediate";
+                configureParent = false;
+                user = attrs.config.username;
+                group = config.users.users.${attrs.config.username}.group;
+                mode = "0755";
+              };
+              allDirectories =
+                mkIntermediateUserDirectories intermediateDirectorySettings attrs.config.files attrs.config.home
+                  definedDirectories;
+            in
+            map (d: d // { directory = concatTwoPaths attrs.config.home d.directory; }) allDirectories;
           description = ''
             Specify a list of directories that should be preserved for this user.
             The paths are interpreted relative to {option}`home`.
+
+            Intermediate directories between {option}`home` and these paths are
+            created with the user's ownership and mode `0755`.
           '';
           example = [ ".rabbit_hole" ];
         };
@@ -362,14 +353,7 @@ let
               ])
             );
           default = [ ];
-          apply = map (
-            f:
-            f
-            // {
-              file = concatTwoPaths attrs.config.home f.file;
-              ownFrom = attrs.config.home;
-            }
-          );
+          apply = map (f: f // { file = concatTwoPaths attrs.config.home f.file; });
           description = ''
             Specify a list of files that should be preserved for this user.
             The paths are interpreted relative to {option}`home`.
@@ -472,10 +456,7 @@ let
                 file = "/etc/wpa_supplicant.conf";
                 how = "symlink";
               }
-              {
-                file = "/etc/machine-id";
-                inInitrd = true;
-              }
+              "/etc/machine-id"
             ]
             ```
           '';
@@ -557,10 +538,7 @@ in
                 file = "/etc/wpa_supplicant.conf";
                 how = "symlink";
               }
-              {
-                file = "/etc/machine-id";
-                inInitrd = true;
-              }
+              "/etc/machine-id"
             ];
             users = {
               alice.directories = [ ".rabbit_hole" ];

@@ -35,7 +35,6 @@ let
 
 in
 {
-  # FIXME we do not like relative paths...
   imports = [ ../gamescope ];
 
   options.programs.steam = {
@@ -106,6 +105,29 @@ in
 
     # TODO implement firewall options once #121 is merged
     # https://github.com/finix-community/finix/pull/121
+    remotePlay.openFirewall = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Open ports in the firewall for Steam Remote Play.
+      '';
+    };
+
+    dedicatedServer.openFirewall = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Open ports in the firewall for Source Dedicated Server.
+      '';
+    };
+
+    localNetworkGameTransfers.openFirewall = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Open ports in the firewall for Steam Local Network Game Transfers.
+      '';
+    };
 
     extraCompatPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
@@ -199,11 +221,12 @@ in
     services.dbus.enable = true;
 
     environment.systemPackages = [
-      (lib.hiPrio gamescopeSessionFile)
       cfg.package
-      cfg.package.run
     ]
-    ++ lib.optional cfg.gamescopeSession.enable steam-gamescope
+    ++ lib.optionals cfg.gamescopeSession.enable [
+      steam-gamescope
+      (lib.hiPrio gamescopeSessionFile)
+    ]
     ++ lib.optional cfg.protontricks.enable (
       cfg.protontricks.package.override { inherit extraCompatPaths; }
     );
@@ -212,5 +235,40 @@ in
       pkgs.steam-devices-udev-rules
     ];
     boot.kernelModules = lib.mkIf cfg.hardware.enable [ "uinput" ];
+
+    providers.firewall = lib.mkMerge [
+      (lib.mkIf (cfg.remotePlay.openFirewall || cfg.localNetworkGameTransfers.openFirewall) {
+        allowedUDPPorts = [ 27036 ]; # Peer discovery
+      })
+
+      (lib.mkIf cfg.remotePlay.openFirewall {
+        # https://help.steampowered.com/en/faqs/view/3E3D-BE6B-787D-A5D2
+        # https://help.steampowered.com/en/faqs/view/2EA8-4D75-DA21-31EB
+        allowedTCPPorts = [
+          27036
+          27037
+        ];
+        allowedUDPPorts = [
+          10400
+          10401
+        ];
+        allowedUDPPortRanges = [
+          {
+            from = 27031;
+            to = 27035;
+          }
+        ];
+      })
+
+      (lib.mkIf cfg.dedicatedServer.openFirewall {
+        allowedTCPPorts = [ 27015 ]; # SRCDS Rcon port
+        allowedUDPPorts = [ 27015 ]; # Gameplay traffic
+      })
+
+      (lib.mkIf cfg.localNetworkGameTransfers.openFirewall {
+        allowedTCPPorts = [ 27040 ]; # Data transfers
+      })
+    ];
+
   };
 }

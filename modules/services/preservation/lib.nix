@@ -1,30 +1,4 @@
-{ lib, pkgs, ... }:
-let
-  # The commands by store path, because the place these run has no PATH worth the name.
-  #
-  # A finit unit's environment is exactly what its `env` file says, and for this one that is
-  # what `log` contributed and nothing else:
-  #
-  #   PATH=/nix/store/...-sysklogd-2.7.2/bin
-  #
-  # So `mkdir`, `mount`, `chown`, `chmod`, `touch` and `ln` all resolved to nothing, every
-  # subshell failed, and the task never succeeded - which on a machine where the sysinit barrier
-  # waits for it is a boot that stops before syslogd and cannot say why. The initrd path never
-  # showed it: there the commands come from the initrd's own environment rather than from a
-  # unit, so the same script worked and the stage 2 branch was written as though PATH were
-  # inherited from somewhere.
-  #
-  # Naming them outright is the fix rather than giving the unit a PATH, because it removes the
-  # assumption instead of satisfying it: these commands are then the ones this module was built
-  # against wherever the script is run from - an initrd, a unit, or a binary which runs it
-  # before any of that exists.
-  mkdir = "${pkgs.coreutils}/bin/mkdir";
-  chown = "${pkgs.coreutils}/bin/chown";
-  chmod = "${pkgs.coreutils}/bin/chmod";
-  touch = "${pkgs.coreutils}/bin/touch";
-  ln = "${pkgs.coreutils}/bin/ln";
-  mount = "${pkgs.util-linux}/bin/mount";
-in
+{ lib, ... }:
 rec {
   # concatenates two paths
   # inserts a "/" in between if there is none, removes one if there are two
@@ -63,19 +37,55 @@ rec {
     in
     if len < 1 then "/" else concatPaths ([ "/" ] ++ (lib.lists.sublist 0 (len - 1) parts));
 
-  # every directory strictly between `boundary` and `path`, outermost first, with neither end
-  # included. The boundary is a path that already exists and is already owned correctly; the
-  # result is what `mkdir -p` would have had to create to reach `path`.
-  ancestorsBetween =
-    boundary: path:
+  # splits a path on "/", returning a list of non-empty path components
+  parts =
+    path:
+    builtins.foldl' (acc: p: if builtins.isString p && p != "" then acc ++ [ p ] else acc) [ ] (
+      builtins.split "/" path
+    );
+
+  # generates a list of path segments that are parents of the given path
+  # e.g.: for "/foo/bar/baz" this yields [ "foo/bar" "foo" ]
+  parentSegments =
+    path:
     let
-      base = lib.removeSuffix "/" boundary;
-      parts = builtins.filter (p: p != "") (
-        lib.splitString "/" (lib.removePrefix base (lib.removeSuffix "/" path))
-      );
-      n = builtins.length parts;
+      # collect all path segments, including the given path itself
+      includingPath = builtins.foldl' (
+        acc: part: if acc == [ ] then [ part ] else ([ (concatTwoPaths (builtins.head acc) part) ] ++ acc)
+      ) [ ] (parts path);
+      # return all path segments except for the given path
     in
-    map (i: concatPaths ([ base ] ++ (lib.lists.sublist 0 (i + 1) parts))) (lib.lists.range 0 (n - 2));
+    builtins.tail includingPath;
+
+  # generates a list of unique path segments that are parents of a given list of
+  # paths, excluding those that are already part of that list
+  missingIntermediatePaths =
+    paths:
+    let
+      intermediates = builtins.foldl' (acc: path: acc ++ (parentSegments path)) [ ] paths;
+    in
+    lib.lists.unique (builtins.filter (path: !(builtins.elem path paths)) intermediates);
+
+  # generates a list of attributes to be used in the `directories` option of the `userModule`
+  #
+  # essentially this takes the given lists of configurations for `directories` and `files`,
+  # generates a list of all their unique parent paths and returns a single list of the
+  # given configurations extended by the configurations for their parents, using `defaults`.
+  #
+  # without this, preserving e.g. `.config/someapp/state` would leave `.config` owned by
+  # root, so the user could no longer create anything else in it.
+  mkIntermediateUserDirectories =
+    defaults: files: prefix: directories:
+    let
+      # `files` have already had the home prefix applied, `directories` have not
+      toPaths = map (
+        d: if builtins.hasAttr "file" d then lib.removePrefix prefix d.file else d.directory
+      );
+      intermediates = map (p: defaults // { directory = p; }) (
+        missingIntermediatePaths (toPaths (files ++ directories))
+      );
+    in
+    directories ++ intermediates;
 
   getUserDirectories = lib.mapAttrsToList (_: userConfig: userConfig.directories);
   getUserFiles = lib.mapAttrsToList (_: userConfig: userConfig.files);
@@ -87,65 +97,178 @@ rec {
   getAllFiles =
     stateConfig: stateConfig.files ++ (builtins.concatLists (getUserFiles stateConfig.users));
 
-  # produces the shell commands for all bind mounts and symlinks of one preserved root.
+  # users whose home directory is materialized on the persistent volume
+  getActiveUsers = lib.filterAttrs (_: u: u.directories != [ ] || u.files != [ ]);
+
+  # every user name whose id has to be resolved to preserve this prefix.
+  # ownership is applied in the initrd, so `default.nix` asserts that all of
+  # these have a statically assigned uid.
+  getReferencedUsers =
+    stateConfig:
+    let
+      entries = (getAllDirectories stateConfig) ++ (getAllFiles stateConfig);
+    in
+    lib.unique (
+      (map (e: e.user) entries)
+      ++ (map (e: e.parent.user) (builtins.filter (e: e.configureParent) entries))
+      ++ (lib.mapAttrsToList (_: u: u.username) (getActiveUsers stateConfig.users))
+    );
+
+  # the group counterpart of `getReferencedUsers`
+  getReferencedGroups =
+    stateConfig:
+    let
+      entries = (getAllDirectories stateConfig) ++ (getAllFiles stateConfig);
+    in
+    lib.unique (
+      (map (e: e.group) entries)
+      ++ (map (e: e.parent.group) (builtins.filter (e: e.configureParent) entries))
+      ++ (lib.mapAttrsToList (_: u: u.homeGroup) (getActiveUsers stateConfig.users))
+    );
+
+  # renders a list of `{ name, value }` mount options as a `mount -o` argument
+  renderMountOptions = lib.concatMapStringsSep "," (
+    o: if o.value == null then o.name else "${o.name}=${o.value}"
+  );
+
+  # produces shell commands for all bind mounts to run in the initrd after mount-all.
+  # doing everything here means bind mounts persist through switch_root, so all paths are
+  # available from the very start of stage 2.
   #
-  # `prefix` is where that root is mounted when the commands run: "/sysroot" in an initrd,
-  # where doing the work before switch_root means the paths are available from the very start
-  # of stage 2, and "" on a machine with no initrd, where the root is already the root and the
-  # same commands run against it directly. Symlink targets are never prefixed - they are
-  # resolved in the final namespace either way.
+  # `ids` resolves user/group names to the numeric ids used by `chown`. names are
+  # deliberately not used: the initrd has no passwd/group database for anything
+  # but root, and dynamically allocated ids do not exist yet at this point.
+  # the commands, the ids and the prefix are all the same kind of thing: something this file
+  # cannot work out for itself and the caller can.
+  #
+  # `ids` was already passed this way, and for the reason given above it - a name cannot be
+  # resolved where these commands run, so it is resolved where it can be and handed over. The
+  # commands themselves are the same problem: named bare they resolve against a PATH, and the
+  # one place this has to work and does not have a useful PATH is a stage 2 unit on a machine
+  # with no initrd, whose environment is exactly what its own unit file says. Passed in, they
+  # are store paths and need no PATH at all - and this file stays `{ lib, ... }`.
+  #
+  # `prefix` is where the root is while these commands run: "/sysroot" from an initrd, before
+  # switch_root, and "" against a root that is already mounted. It was a constant here, which is
+  # what made the whole module initrd-only.
   mkMountCmds =
-    ids: prefix: _preserveAt: stateConfig:
+    cmds: ids: prefix: _preserveAt: stateConfig:
     let
       allDirectories = getAllDirectories stateConfig;
       allFiles = getAllFiles stateConfig;
       bindmountDirs = builtins.filter (d: d.how == "bindmount") allDirectories;
       symlinkDirs = builtins.filter (d: d.how == "symlink") allDirectories;
+      # not preserved themselves, they only need to exist with the right ownership
+      intermediateDirs = builtins.filter (d: d.how == "_intermediate") allDirectories;
       bindmountFiles = builtins.filter (f: f.how == "bindmount") allFiles;
       symlinkFiles = builtins.filter (f: f.how == "symlink") allFiles;
 
-      par = cmds: "( ${lib.concatStringsSep "; " cmds} ) &";
+      # runs the commands for one entry as a group.
+      #
+      # the commands are chained with `&&` so the group stops at the first
+      # failure, and a path that could not be prepared is never mounted over
+      # half-done - when the persistent copy turns out to be the wrong type, the
+      # volatile mountpoint is left absent rather than present and empty, which
+      # would silently swallow everything written to it.
+      #
+      # `set -e` deliberately is not used here: POSIX suspends errexit for any
+      # command that is the left operand of `||`, and both bash and ash extend
+      # that suspension to a `set -e` executed inside the compound command. the
+      # group below is exactly such an operand, so errexit would be a no-op.
+      #
+      # `|| preservation_warn` then contains the failure. preserving state is not
+      # worth refusing to boot over, so a broken entry degrades to a warning on
+      # the console while every other entry is still set up. the warn helper is
+      # defined in the script preamble in `default.nix`.
+      guard =
+        {
+          background ? true,
+        }:
+        label: cmds:
+        "( ${lib.concatStringsSep " && " cmds} ) || preservation_warn ${lib.escapeShellArg label}"
+        + lib.optionalString background " &";
 
-      # The options carry ownership for a preserved path and for the parent that has to be
-      # made to hold it, and nothing was applying either: every directory arrived through
-      # `mkdir -p` or `mount --mkdir`, which run as root here - in the initrd, before there is
-      # a session or a login - so a user's own directories came out owned by root.
-      #
-      # /home/bella/.config is the case that shows it. It exists only because something
-      # preserved a path inside it, so nothing else creates it and nothing else chowns it;
-      # the user's home is made by tmpfiles and this is one level below that. A compositor
-      # then cannot write its own configuration into its own home.
-      # Numeric ids, not names. These commands run in the initrd, which carries no /etc/passwd
-      # and no /etc/group - so `chown bella:users` there cannot resolve either name and fails,
-      # inside a backgrounded subshell whose status nothing checks. Every preserved path of
-      # every user stayed root-owned and nothing said so.
-      #
-      # `root:root` kept working throughout, which is why only the users' own paths were wrong,
-      # and why this took a while to see. What it breaks first is nix: an unprivileged user
-      # cannot create ~/.local/state/nix underneath a root-owned ~/.local, so `nix-env` fails,
-      # so home-manager cannot find a profile directory, so activation stops before it links
-      # anything. Which presents as a compositor starting with no configuration at all.
-      own = entry: path: [
-        "${chown} ${ids entry} ${path}"
-        "${chmod} ${entry.mode} ${path}"
-      ];
+      par = guard { };
+      serial = guard { background = false; };
 
-      # Every directory created on the way to a preserved path, not only the last one.
-      # `mkdir -p` makes them all as root, and chowning just the immediate parent corrected
-      # ~/.local/state while leaving ~/.local itself - which is enough for everything above.
-      #
-      # A user's entry carries the home its path is relative to, and that home is the boundary:
-      # it is made by tmpfiles and already owned correctly. Entries that are not a user's keep
-      # the single-parent behaviour, because /var and / are not this module's to reassign.
-      createdParents =
-        entry: path:
-        if entry ? ownFrom then
-          ancestorsBetween (concatPaths [
+      # apply ownership and permissions to a path this script has just created
+      mkOwn =
+        {
+          user,
+          group,
+          mode,
+          ...
+        }:
+        path: [
+          "${cmds.chown} ${ids.uid user}:${ids.gid group} ${path}"
+          "${cmds.chmod} ${mode} ${path}"
+        ];
+
+      # missing parent directories are created as root:root 0755 by default;
+      # `configureParent` gives them the ownership and mode declared on the entry.
+      # applied to both the volatile and the persistent copy of the parent.
+      mkParent =
+        entry: paths:
+        lib.optionals entry.configureParent (
+          lib.concatMap (
+            path:
+            let
+              parent = parentDirectory path;
+            in
+            [ "${cmds.mkdir} -p ${parent}" ] ++ mkOwn { inherit (entry.parent) user group mode; } parent
+          ) paths
+        );
+
+      # home directories are created up front, sequentially, so that the parallel
+      # per-entry commands below never race to create them.
+      homeCmds = lib.mapAttrsToList (
+        _: userConfig:
+        let
+          persistentHome = concatPaths [
             prefix
-            entry.ownFrom
-          ]) path
-        else
-          [ (parentDirectory path) ];
+            stateConfig.persistentStoragePath
+            userConfig.home
+          ];
+        in
+        serial userConfig.home (
+          [ "${cmds.mkdir} -p ${persistentHome}" ]
+          ++ mkOwn {
+            user = userConfig.username;
+            group = userConfig.homeGroup;
+            mode = userConfig.homeMode;
+          } persistentHome
+        )
+      ) (getActiveUsers stateConfig.users);
+
+      # like `homeCmds`, emitted sequentially and shallowest first, so that the
+      # parallel per-entry commands below can only ever find them already in place.
+      intermediateCmds =
+        map
+          (
+            dirConfig:
+            let
+              persistentPath = concatPaths [
+                prefix
+                stateConfig.persistentStoragePath
+                dirConfig.directory
+              ];
+              volatilePath = concatPaths [
+                prefix
+                dirConfig.directory
+              ];
+            in
+            serial dirConfig.directory (
+              [ "${cmds.mkdir} -p ${persistentPath}" ]
+              ++ mkOwn dirConfig persistentPath
+              ++ [ "${cmds.mkdir} -p ${volatilePath}" ]
+              ++ mkOwn dirConfig volatilePath
+            )
+          )
+          (
+            lib.sort (
+              a: b: builtins.lessThan (builtins.stringLength a.directory) (builtins.stringLength b.directory)
+            ) intermediateDirs
+          );
 
       dirCmds = map (
         dirConfig:
@@ -160,13 +283,19 @@ rec {
             dirConfig.directory
           ];
         in
-        par (
+        par dirConfig.directory (
           [
-            "${mkdir} -p ${persistentPath}"
-            "${mount} --mkdir --bind ${persistentPath} ${volatilePath}"
+            "${cmds.mkdir} -p ${persistentPath}"
+            "${cmds.mkdir} -p ${volatilePath}"
           ]
-          ++ lib.concatMap (own dirConfig.parent) (createdParents dirConfig volatilePath)
-          ++ own dirConfig volatilePath
+          ++ mkOwn dirConfig persistentPath
+          ++ mkParent dirConfig [
+            persistentPath
+            volatilePath
+          ]
+          ++ [
+            "${cmds.mount} -o ${renderMountOptions dirConfig.mountOptions} ${persistentPath} ${volatilePath}"
+          ]
         )
       ) bindmountDirs;
 
@@ -187,13 +316,16 @@ rec {
             dirConfig.directory
           ];
         in
-        par (
+        par dirConfig.directory (
           lib.optionals dirConfig.createLinkTarget (
-            [ "${mkdir} -p ${persistentPath}" ] ++ own dirConfig persistentPath
+            [ "${cmds.mkdir} -p ${persistentPath}" ] ++ mkOwn dirConfig persistentPath
           )
-          ++ [ "${mkdir} -p ${parentDirectory volatilePath}" ]
-          ++ lib.concatMap (own dirConfig.parent) (createdParents dirConfig volatilePath)
-          ++ [ "${ln} -sf ${target} ${volatilePath}" ]
+          ++ [ "${cmds.mkdir} -p ${parentDirectory volatilePath}" ]
+          ++ mkParent dirConfig [
+            persistentPath
+            volatilePath
+          ]
+          ++ [ "${cmds.ln} -sf ${target} ${volatilePath}" ]
         )
       ) symlinkDirs;
 
@@ -210,18 +342,21 @@ rec {
             fileConfig.file
           ];
         in
-        par (
+        par fileConfig.file (
           [
-            "${mkdir} -p ${parentDirectory persistentPath}"
-            "${touch} ${persistentPath}"
-            "${mkdir} -p ${parentDirectory volatilePath}"
+            "${cmds.mkdir} -p ${parentDirectory persistentPath}"
+            "${cmds.touch} ${persistentPath}"
+            "${cmds.mkdir} -p ${parentDirectory volatilePath}"
+            "${cmds.touch} ${volatilePath}"
           ]
-          ++ lib.concatMap (own fileConfig.parent) (createdParents fileConfig volatilePath)
+          ++ mkOwn fileConfig persistentPath
+          ++ mkParent fileConfig [
+            persistentPath
+            volatilePath
+          ]
           ++ [
-            "${touch} ${volatilePath}"
-            "${mount} --bind ${persistentPath} ${volatilePath}"
+            "${cmds.mount} -o ${renderMountOptions fileConfig.mountOptions} ${persistentPath} ${volatilePath}"
           ]
-          ++ own fileConfig persistentPath
         )
       ) bindmountFiles;
 
@@ -242,14 +377,28 @@ rec {
             fileConfig.file
           ];
         in
-        par (
-          lib.optionals fileConfig.createLinkTarget [ "${touch} ${persistentPath}" ]
-          ++ [
-            "${mkdir} -p ${parentDirectory volatilePath}"
-            "${ln} -sf ${target} ${volatilePath}"
+        par fileConfig.file (
+          lib.optionals fileConfig.createLinkTarget (
+            [
+              "${cmds.mkdir} -p ${parentDirectory persistentPath}"
+              "${cmds.touch} ${persistentPath}"
+            ]
+            ++ mkOwn fileConfig persistentPath
+          )
+          ++ [ "${cmds.mkdir} -p ${parentDirectory volatilePath}" ]
+          ++ mkParent fileConfig [
+            persistentPath
+            volatilePath
           ]
+          ++ [ "${cmds.ln} -sf ${target} ${volatilePath}" ]
         )
       ) symlinkFiles;
     in
-    dirCmds ++ symlinkDirCmds ++ fileCmds ++ symlinkFileCmds ++ [ "wait" ];
+    homeCmds
+    ++ intermediateCmds
+    ++ dirCmds
+    ++ symlinkDirCmds
+    ++ fileCmds
+    ++ symlinkFileCmds
+    ++ [ "wait" ];
 }
