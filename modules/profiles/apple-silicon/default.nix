@@ -26,6 +26,17 @@ let
   # `services.udev.packages`, which the udev module already scans for `udev/hwdb.d/*`. So the
   # text becomes a package rather than needing a new mechanism.
   hwdbPackage = pkgs.writeTextDir "lib/udev/hwdb.d/90-apple-silicon.hwdb" config.services.udev.extraHwdb;
+
+  # Whether asahi-audio reached a `configPackages` list. By name, because the forward below
+  # hands over whatever asahi put there and the point is to check that it arrived, not that it
+  # is any particular derivation.
+  hasAsahiAudio = packages: lib.any (p: (p.pname or p.name or "") == "asahi-audio") packages;
+
+  # The two halves it has to arrive on, with `or [ ]` for the case the first assertion is about:
+  # when the pipewire module in use is the one without `configPackages`, these paths do not
+  # exist, and this must not throw before that assertion gets to explain itself.
+  pipewireHas = hasAsahiAudio (config.programs.pipewire.configPackages or [ ]);
+  wireplumberHas = hasAsahiAudio (config.programs.pipewire.wireplumber.configPackages or [ ]);
 in
 {
   # The finix modules this writes into, named because it writes into them: `programs.limine`
@@ -206,6 +217,55 @@ in
 
           Import `community-modules.nixosModules.pipewire` instead, and make sure something
           supervises pipewire and wireplumber - neither module starts them.
+        '';
+      }
+      {
+        # And that it actually arrived, which the assertion above does not say. That one checks
+        # the forward has somewhere to land - the right pipewire module - and stops there. It
+        # says nothing about whether anything came through it.
+        #
+        # Which is the failure worth refusing here. asahi-audio's chain is the crossover -
+        # without it pipewire wires a stream straight to the raw ALSA sink and full-range content
+        # reaches the tweeters - and it fails by sounding thin rather than by erroring, so it is
+        # not noticed from the outside. `speakersafetyd` does not cover for it either: the daemon
+        # enforces excursion and thermal limits against the profile asahi-audio establishes, so
+        # without it the protection is being applied to the wrong signal path.
+        #
+        # It has gone wrong once already in the other direction - a host naming the package by
+        # hand on top of the forward, so it arrived twice and nobody noticed either copy - which
+        # is the same blindness read the other way round. Nothing was checking what this list
+        # held.
+        #
+        # Off when `setupAsahiSound` is, because that option is a host saying it does not want
+        # asahi's sound setup, and an empty list is then the correct outcome rather than a
+        # failure. What this catches is the other case: the setup is on, and the package still
+        # did not arrive - the forward removed or renamed upstream, or a `mkForce` downstream.
+        #
+        # Gated on `options.programs.pipewire ? configPackages` so that a configuration with the
+        # wrong pipewire module gets the specific diagnosis above rather than both at once.
+        assertion =
+          !cfg.setupAsahiSound
+          || !(options.programs.pipewire ? configPackages)
+          || (pipewireHas && wireplumberHas);
+        message = ''
+          `hardware.asahi.setupAsahiSound` is on, but asahi-audio did not reach ${
+            if !pipewireHas && !wireplumberHas then
+              "`programs.pipewire.configPackages` or `programs.pipewire.wireplumber.configPackages`"
+            else if !pipewireHas then
+              "`programs.pipewire.configPackages`"
+            else
+              "`programs.pipewire.wireplumber.configPackages`"
+          }.
+
+          Both halves are needed and they do different jobs: share/pipewire carries the filter
+          chains, share/wireplumber the routing and policy that publishes asahi-audio's sink and
+          hides the raw ALSA one behind it. Filters with nothing routed through them are as
+          silent a failure as no filters.
+
+          It should arrive from asahi's own sound module, which sets
+          `services.pipewire.configPackages` on both, through the forward in this file. If that
+          is still in place, check that nothing downstream is overriding
+          `programs.pipewire.configPackages` with `mkForce`.
         '';
       }
       {
