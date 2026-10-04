@@ -111,6 +111,28 @@ in
       description = "Accepted and warned about: finix has no iio-sensor-proxy module.";
     };
 
+    # The one variable the Apple Video Decoder support brought with it:
+    # `LIBVA_DRIVER_NAME`, under `mkIf cfg.avd.vaapi-support`. That option defaults
+    # false, which spares it no more than it spares the sound block below - a
+    # definition's path is matched against the declarations before any condition is
+    # applied, so an option written inside a disabled block still has to exist.
+    #
+    # Forwarded rather than ignored, because there is somewhere for it to go:
+    # `environment.variables`, which finix renders to /etc/profile.d/session-vars.sh.
+    # The same route the pipewire comment further down describes for ALSA_CONFIG_UCM2,
+    # and it carries the same caveat - nixos sets these through PAM, where a session
+    # sees them whether or not it began with a login shell, and /etc/profile.d reaches
+    # POSIX login shells only.
+    #
+    # `type` taken from finix's own option and deliberately not `apply`: that apply
+    # joins a list with colons into a string, so doing it here would mean joining and
+    # then being coerced back into a list on the way in.
+    environment.sessionVariables = lib.mkOption {
+      inherit (options.environment.variables) type;
+      default = { };
+      description = "Forwarded to {option}`environment.variables`.";
+    };
+
     # The sound block is `lib.mkIf (enable && setupAsahiSound)`, which does not spare these
     # from being declared: the module system matches definition paths against declarations
     # before it applies any condition, so an option written inside a disabled block still has
@@ -216,6 +238,9 @@ in
     services.rtkit.enable = lib.mkIf config.security.rtkit.enable true;
 
     services.udev.packages = lib.mkIf (config.services.udev.extraHwdb != "") [ hwdbPackage ];
+
+    # And the AVD module's variable, by the route the pipewire comment below describes.
+    environment.variables = config.environment.sessionVariables;
 
     # `systemd.packages = [ speakersafetyd ]` is what asahi says; this is what it means. The
     # unit in that package cannot be read here, so the daemon has a finix module of its own and
