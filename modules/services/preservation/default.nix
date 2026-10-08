@@ -29,25 +29,54 @@ let
   # about it. the fallback is only worth keeping until ownership can be applied
   # from stage 2, after userborn has allocated ids - at which point dynamic ids
   # work properly and none of this is needed.
-  # the commands, by store path.
+  # how the script names its interpreter and its commands, which is not the same answer in both
+  # places it runs.
   #
-  # Named bare they resolve against a PATH, and both places this has run until now supplied
-  # one by accident: an initrd carries a shell and these binaries, and a stage 2 unit runs
-  # after activation, when /run/current-system/sw/bin is on everyone's PATH. Neither holds for
-  # the stage 2 unit emitted when there is no initrd - a finit unit's environment is exactly
-  # what its own unit file says - so every command in the script resolved to nothing. Not a
-  # hang and not a misconfiguration: a script that ran, found nothing, and preserved nothing.
+  # Named bare, they resolve against a PATH. A stage 2 unit has no PATH worth the name - a finit
+  # unit's environment is exactly what its own unit file says - so there they are store paths,
+  # which is what the no-initrd path needs and what it was given.
+  #
+  # The initrd cannot use store paths, and this is the part that reading the script does not
+  # show. `boot.initrd.contents` is assembled by `makeInitrdNG`, whose dependency resolution is
+  # ELF-only: `if let Ok(Object::Elf(e)) = Object::parse(&contents)` in make-initrd-ng's
+  # `copy_file`, which then follows the interpreter, NEEDED libraries, runpaths and dlopen
+  # notes. A shell script is not ELF, so it is copied verbatim and every store path in it -
+  # the `#!` line included - is inert text pointing outside the image. The exec fails before
+  # the first line runs.
+  #
+  # So the initrd gets bare names and /bin/sh. That is not the hope it looks like: the image's
+  # contents are declared, by `boot.initrd.path`, which carries busybox for the shell and these
+  # applets, and `lib.hiPrio util-linux.mount` on top of it because busybox's `mount` does not
+  # understand the `X-mount.mkdir` option used below. A guarantee, written down somewhere else.
   #
   # Passed into lib.nix rather than resolved there, for the same reason `ids` is: that file is
   # `{ lib, ... }` and has no pkgs to resolve them with.
-  commands = {
-    mkdir = "${pkgs.coreutils}/bin/mkdir";
-    chown = "${pkgs.coreutils}/bin/chown";
-    chmod = "${pkgs.coreutils}/bin/chmod";
-    touch = "${pkgs.coreutils}/bin/touch";
-    ln = "${pkgs.coreutils}/bin/ln";
-    mount = "${pkgs.util-linux}/bin/mount";
-  };
+  commandsFor =
+    variant:
+    if variant == "initrd" then
+      {
+        mkdir = "mkdir";
+        chown = "chown";
+        chmod = "chmod";
+        touch = "touch";
+        ln = "ln";
+        mount = "mount";
+      }
+    else
+      {
+        mkdir = "${pkgs.coreutils}/bin/mkdir";
+        chown = "${pkgs.coreutils}/bin/chown";
+        chmod = "${pkgs.coreutils}/bin/chmod";
+        touch = "${pkgs.coreutils}/bin/touch";
+        ln = "${pkgs.coreutils}/bin/ln";
+        mount = "${pkgs.util-linux}/bin/mount";
+      };
+
+  shellFor = variant: if variant == "initrd" then "/bin/sh" else pkgs.runtimeShell;
+
+  # where the root is while these commands run: "/sysroot" from an initrd, before switch_root,
+  # and "" against a root that is already mounted.
+  prefixFor = variant: if variant == "initrd" then "/sysroot" else "";
 
   lookupUid = name: config.users.users.${name}.uid or null;
   lookupGid = name: config.users.groups.${name}.gid or null;
@@ -103,41 +132,41 @@ let
   # one unit per `preserveAt` entry, so each volume is set up as soon as it is
   # available instead of every entry waiting on the slowest one.
   #
-  # Taken as a function of the prefix, because where the root is while these commands run is a
-  # property of the boot path and not of the entry: "/sysroot" from an initrd, before
-  # switch_root, and "" against a root that is already mounted. Whether an entry has any
-  # commands at all does not depend on it, so either set answers the "is anything configured"
-  # question below.
+  # Taken as a function of the variant - "initrd" or "stage2" - because everything that differs
+  # between the two places this runs is a property of the boot path and not of the entry: where
+  # the root is, how commands are named, and which interpreter exists. Deriving all three from
+  # the one argument is the point: they were a prefix and a shared command set before, so a
+  # change that was right for one place silently applied to the other.
+  #
+  # Whether an entry has any commands at all does not depend on the variant, so either set
+  # answers the "is anything configured" question below.
   entriesFor =
-    prefix:
+    variant:
     lib.filter (e: e.cmds != [ ]) (
       lib.mapAttrsToList (name: stateConfig: {
         inherit stateConfig;
         unit = "preservation-${escapePath stateConfig.persistentStoragePath}";
-        cmds = mkMountCmds commands ids prefix name stateConfig;
+        cmds = mkMountCmds (commandsFor variant) ids (prefixFor variant) name stateConfig;
       }) cfg.preserveAt
     );
 
-  entries = entriesFor "/sysroot";
+  entries = entriesFor "initrd";
 
   # a preserved path that cannot be set up is a bad reason to refuse to boot, so
   # every entry is guarded (see `guard` in lib.nix) and this script always exits
   # 0. the cost is that failures are only ever reported, never enforced - hence
   # writing to the console directly, so the warning is visible even though finit
   # is told the task succeeded.
-  # `#!` by store path, for the same reason the commands are.
+  # `#!` the same way the commands are named, which `shellFor` decides: a store path for stage
+  # 2, where nothing guarantees /bin/sh before activation, and /bin/sh in the initrd, where a
+  # store path would not survive being copied into the image. See `commandsFor`.
   #
-  # Both places this has run until now had a shell where that line points: an initrd carries
-  # one, and a stage 2 unit runs after activation has made /bin/sh. The stage 2 unit emitted
-  # when there is no initrd runs before neither of those is true of /bin, so the interpreter is
-  # named the same way everything else here is.
-  #
-  # `runtimeShell` rather than writeShellScript, so the body below - which is POSIX and says so
+  # `writeScript` rather than `writeShellScript`, so the body below - which is POSIX and says so
   # where it reasons about errexit - keeps its own `#!` line and its own preamble.
   mkScript =
-    suffix: entry:
-    pkgs.writeScript "${entry.unit}-${suffix}" ''
-      #!${pkgs.runtimeShell}
+    variant: entry:
+    pkgs.writeScript "${entry.unit}-${variant}" ''
+      #!${shellFor variant}
       preservation_warn() {
         msg="preservation: failed to set up $1, continuing without it"
         echo "$msg" >&2
@@ -215,7 +244,7 @@ in
 
             type.oneshot.command = toString (mkScript "stage2" entry);
           }
-        ) (entriesFor "")
+        ) (entriesFor "stage2")
       )
     );
   };
