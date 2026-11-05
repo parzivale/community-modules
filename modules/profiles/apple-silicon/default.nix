@@ -179,6 +179,18 @@ in
       description = "Accepted and ignored: finix has no systemd user session. See the assertions.";
     };
 
+    # The units that unpack `firmware.cpio` from the ESP at boot, written when
+    # `peripheralFirmwareDirectory` is null. Nothing here runs a systemd initrd, so with that
+    # option null the vendor firmware - Wi-Fi, Bluetooth, the camera - does not load. Setting
+    # it puts the firmware in `hardware.firmware` at build time instead, which needs none of
+    # this.
+    boot.initrd.systemd = lib.mkOption {
+      type = with lib.types; attrsOf anything;
+      default = { };
+      internal = true;
+      description = "Accepted and ignored: finix has no systemd initrd. Set `hardware.asahi.peripheralFirmwareDirectory`.";
+    };
+
     # Units shipped by a package, which is how `speakersafetyd` is meant to arrive. finix has
     # no systemd to read them, and this one is not optional on the hardware, so it is refused
     # rather than dropped - see the assertion below.
