@@ -121,7 +121,7 @@ in
 
       description = "stop bootchart collector and write boot chart";
       command = "${cfg.package}/bin/bootchartd stop";
-      runlevels = toString cfg.stop.runlevel;
+      runlevel = toString cfg.stop.runlevel;
     };
   };
 }
